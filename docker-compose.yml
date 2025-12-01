@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  # 1. THE MEMORY (Vector Database)
+  qdrant:
+    image: qdrant/qdrant
+    container_name: decay_memory_db
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    restart: always
+
+  # 2. THE BRAIN (Your Python API)
+  her_app:
+    build: .
+    container_name: decay_memory_core
+    ports:
+      - "8000:8080"  # Map PC port 8000 to Container port 8080
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Inside Docker, 'localhost' is the container itself.
+      # We must point to the 'qdrant' service name defined above.
+      - QDRANT_HOST=qdrant 
+      - QDRANT_PORT=6333
+    volumes:
+      # Persist the Soul and Flight Recorders to your actual disk
+      - ./flight_recorders:/app/flight_recorders
+      - ./soul_state.json:/app/soul_state.json
+      - ./heartbeat_mood.json:/app/heartbeat_mood.json
+    depends_on:
+      - qdrant
+    restart: always
