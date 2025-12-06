@@ -34,6 +34,12 @@ SPARSE_VECTOR_NAME = "keywords"
 
 # Tuning Constants (From our tests)
 DECAY_FLOOR = 0.3
+
+# Feedback System Constants (from v1.0 dashboard_config.json)
+BOOST_INCREMENT = 1.5      # Multiply boost by this each time
+MAX_BOOST = 4.0            # Maximum boost multiplier
+DEPRECATION_MULTIPLIER = 0.1  # Decay 10x faster when deprecated
+
 PROACTIVE_CONFIG = {
     "enabled": True,
     "trigger_threshold": 0.60,
@@ -214,3 +220,171 @@ class MemorySystem:
         # In a real multi-user system, we'd store session state in Qdrant per user.
         # For now, we just acknowledge it.
         pass
+
+    # =========================================================================
+    # MEMORY FEEDBACK SYSTEM (Restored from v1.0)
+    # =========================================================================
+    
+    def boost_memory(self, memory_id: str, reason: str = "") -> str:
+        """
+        Increase memory importance by multiplying boost_factor.
+        Each boost multiplies by BOOST_INCREMENT (1.5x), up to MAX_BOOST (4x).
+        """
+        try:
+            res = self.client.retrieve(COLLECTION, ids=[memory_id], with_payload=True)
+            if not res:
+                return "❌ Memory not found"
+            
+            mem = res[0]
+            curr = mem.payload.get('boost_factor', 1.0)
+            new_boost = min(curr * BOOST_INCREMENT, MAX_BOOST)
+            
+            # Track boost history
+            hist = mem.payload.get('boost_history', [])
+            hist.append({
+                "ts": time.time(), 
+                "reason": reason, 
+                "old": curr, 
+                "new": new_boost
+            })
+            
+            self.client.set_payload(
+                COLLECTION,
+                {"boost_factor": new_boost, "boost_history": hist},
+                points=[memory_id]
+            )
+            return f"✅ Boosted {curr:.1f}x → {new_boost:.1f}x"
+        except Exception as e:
+            logger.error(f"boost_memory failed: {e}")
+            return f"❌ Error: {e}"
+    
+    def deprecate_memory(self, memory_id: str, reason: str = "") -> str:
+        """
+        Mark memory as deprecated - it will decay 10x faster.
+        Deprecated memories still exist but fade quickly.
+        """
+        try:
+            self.client.set_payload(
+                COLLECTION,
+                {
+                    "is_deprecated": True,
+                    "deprecation_factor": DEPRECATION_MULTIPLIER,
+                    "deprecation_reason": reason
+                },
+                points=[memory_id]
+            )
+            return f"✅ Memory deprecated: {reason or 'No reason given'}"
+        except Exception as e:
+            logger.error(f"deprecate_memory failed: {e}")
+            return f"❌ Error: {e}"
+    
+    def correct_memory(self, memory_id: str, new_content: str) -> str:
+        """
+        Update memory content with new text.
+        Regenerates embedding and preserves correction history.
+        """
+        try:
+            res = self.client.retrieve(COLLECTION, ids=[memory_id], with_payload=True)
+            if not res:
+                return "❌ Memory not found"
+            
+            mem = res[0]
+            old_content = mem.payload.get('content', '')
+            
+            # Track correction history
+            hist = mem.payload.get('correction_history', [])
+            hist.append({
+                "ts": time.time(),
+                "old": old_content,
+                "new": new_content
+            })
+            
+            # Generate new embedding
+            new_vec = embedding_helper.embed(new_content)
+            if new_vec is None:
+                return "❌ Error: Failed to generate embedding"
+            
+            # Update payload
+            updated_payload = mem.payload.copy()
+            updated_payload.update({
+                "content": new_content,
+                "timestamp": time.time(),
+                "correction_history": hist
+            })
+            
+            # Create new point with updated vector and payload
+            if ENABLE_HYBRID_SEARCH:
+                sparse_vec = self._generate_sparse_vector(new_content)
+                point = PointStruct(
+                    id=memory_id,
+                    vector={
+                        "dense": new_vec,
+                        SPARSE_VECTOR_NAME: SparseVector(
+                            indices=list(sparse_vec.keys()),
+                            values=list(sparse_vec.values())
+                        )
+                    },
+                    payload=updated_payload
+                )
+            else:
+                point = PointStruct(id=memory_id, vector=new_vec, payload=updated_payload)
+            
+            self.client.upsert(COLLECTION, points=[point])
+            return f"✅ Memory corrected: '{old_content[:50]}...' → '{new_content[:50]}...'"
+        except Exception as e:
+            logger.error(f"correct_memory failed: {e}")
+            return f"❌ Error: {e}"
+    
+    def delete_memory(self, memory_id: str, reason: str = "") -> str:
+        """
+        Soft-delete a memory by archiving it.
+        The memory is preserved but hidden from searches.
+        """
+        try:
+            self.client.set_payload(
+                COLLECTION,
+                {
+                    "type": "archived_deleted",
+                    "del_reason": reason,
+                    "deleted_at": time.time()
+                },
+                points=[memory_id]
+            )
+            return f"✅ Memory archived: {reason or 'No reason given'}"
+        except Exception as e:
+            logger.error(f"delete_memory failed: {e}")
+            return f"❌ Error: {e}"
+    
+    def set_memory_project(self, memory_id: str, project_name: str) -> str:
+        """
+        Move a memory to a different project.
+        """
+        try:
+            res = self.client.retrieve(COLLECTION, ids=[memory_id], with_payload=True)
+            if not res:
+                return "❌ Memory not found"
+            
+            old_project = res[0].payload.get('project_name', 'global')
+            self.client.set_payload(
+                COLLECTION,
+                {"project_name": project_name},
+                points=[memory_id]
+            )
+            return f"✅ Moved: '{old_project}' → '{project_name or 'global'}'"
+        except Exception as e:
+            logger.error(f"set_memory_project failed: {e}")
+            return f"❌ Error: {e}"
+    
+    def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a single memory by ID.
+        Useful for inspecting memory details.
+        """
+        try:
+            res = self.client.retrieve(COLLECTION, ids=[memory_id], with_payload=True)
+            if not res:
+                return None
+            return res[0].payload | {"id": res[0].id}
+        except Exception as e:
+            logger.error(f"get_memory failed: {e}")
+            return None

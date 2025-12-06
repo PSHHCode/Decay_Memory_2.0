@@ -335,3 +335,81 @@ async def health_check():
         health_status["components"]["soul"] = f"unhealthy: {str(e)}"
     
     return health_status
+
+
+# =============================================================================
+# MEMORY FEEDBACK ENDPOINTS (Restored from v1.0)
+# =============================================================================
+
+class MemoryFeedbackRequest(BaseModel):
+    memory_id: str
+    reason: Optional[str] = ""
+
+class MemoryCorrectRequest(BaseModel):
+    memory_id: str
+    new_content: str
+
+class MemoryProjectRequest(BaseModel):
+    memory_id: str
+    project_name: str
+
+@app.post("/memory/{memory_id}/boost")
+async def boost_memory(memory_id: str, reason: Optional[str] = ""):
+    """Increase a memory's importance (1.5x boost, max 4x)."""
+    result = await asyncio.to_thread(
+        state.memory.boost_memory, 
+        memory_id, 
+        reason
+    )
+    return {"result": result}
+
+@app.post("/memory/{memory_id}/deprecate")
+async def deprecate_memory(memory_id: str, reason: Optional[str] = ""):
+    """Mark a memory as deprecated (decays 10x faster)."""
+    result = await asyncio.to_thread(
+        state.memory.deprecate_memory, 
+        memory_id, 
+        reason
+    )
+    return {"result": result}
+
+@app.post("/memory/{memory_id}/correct")
+async def correct_memory(memory_id: str, request: MemoryCorrectRequest):
+    """Update a memory's content with new text."""
+    result = await asyncio.to_thread(
+        state.memory.correct_memory, 
+        memory_id, 
+        request.new_content
+    )
+    return {"result": result}
+
+@app.delete("/memory/{memory_id}")
+async def delete_memory(memory_id: str, reason: Optional[str] = ""):
+    """Soft-delete (archive) a memory."""
+    result = await asyncio.to_thread(
+        state.memory.delete_memory, 
+        memory_id, 
+        reason
+    )
+    return {"result": result}
+
+@app.put("/memory/{memory_id}/project")
+async def set_memory_project(memory_id: str, request: MemoryProjectRequest):
+    """Move a memory to a different project."""
+    result = await asyncio.to_thread(
+        state.memory.set_memory_project, 
+        memory_id, 
+        request.project_name
+    )
+    return {"result": result}
+
+@app.get("/memory/{memory_id}")
+async def get_memory(memory_id: str):
+    """Get a single memory by ID."""
+    result = await asyncio.to_thread(
+        state.memory.get_memory, 
+        memory_id
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return result
