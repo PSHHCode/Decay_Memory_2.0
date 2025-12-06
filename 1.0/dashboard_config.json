@@ -1,0 +1,64 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "last_updated": "2025-11-22",
+    "description": "Decay Memory System Configuration - Adjustable Parameters"
+  },
+  "half_lives": {
+    "_description": "Memory decay half-lives in seconds. Higher = slower decay.",
+    "personal": 31536000,
+    "preference": 15552000,
+    "goal": 7776000,
+    "project": 2592000,
+    "topic": 31536000,
+    "context_handover": 2592000,
+    "dialog": 604800,
+    "knowledge_graph": 15552000,
+    "_validation": {
+      "min": 3600,
+      "max": 63072000,
+      "note": "Range: 1 hour to 2 years"
+    }
+  },
+  "session_management": {
+    "_description": "Session token limits and safety buffers",
+    "max_tokens": 190000,
+    "safety_buffer": 10000,
+    "_validation": {
+      "max_tokens_min": 50000,
+      "max_tokens_max": 500000,
+      "safety_buffer_min": 5000,
+      "safety_buffer_max": 50000
+    }
+  },
+  "knowledge_graph": {
+    "_description": "Knowledge graph extraction and caching settings",
+    "decay_days": 180,
+    "cache_seconds": 300,
+    "auto_invalidate": true,
+    "_validation": {
+      "decay_days_min": 7,
+      "decay_days_max": 730,
+      "cache_seconds_min": 60,
+      "cache_seconds_max": 3600
+    }
+  },
+  "feedback_system": {
+    "_description": "Boost/deprecation settings for memory importance",
+    "boost_increment": 1.5,
+    "deprecation_multiplier": 0.1,
+    "max_boost": 4,
+    "_validation": {
+      "boost_increment_min": 1.1,
+      "boost_increment_max": 3,
+      "deprecation_multiplier_min": 0.01,
+      "deprecation_multiplier_max": 0.5,
+      "max_boost_min": 2,
+      "max_boost_max": 10
+    }
+  },
+  "paths": {
+    "_description": "File system paths (change with caution)",
+    "flight_recorder_dir": "C:/Users/Steph/OneDrive/Documents/ai-companion/flight_recorders"
+  }
+}
