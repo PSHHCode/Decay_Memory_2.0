@@ -1,6 +1,7 @@
 """
-The Soul: Emotional State Machine v2.0
+The Soul: Emotional State Machine v2.0.1
 Persists personality traits that the LLM context window forgets.
+Fix #8: Better error handling with backup of corrupt files
 """
 import json
 import time
@@ -27,17 +28,36 @@ class EmotionalState:
         self.state = self._load_state()
 
     def _load_state(self) -> SoulState:
-        if self.state_file.exists():
+        """Load state with improved error handling (Fix #8)."""
+        if not self.state_file.exists():
+            logger.info("No soul state file found, creating new state")
+            return SoulState(last_interaction=time.time())
+        
+        try:
+            data = json.loads(self.state_file.read_text(encoding='utf-8'))
+            return SoulState(**data)
+        except json.JSONDecodeError as e:
+            logger.error(f"Corrupt soul file (invalid JSON): {e}")
+            backup_path = self.state_file.with_suffix('.json.corrupt')
             try:
-                data = json.loads(self.state_file.read_text(encoding='utf-8'))
-                return SoulState(**data)
-            except Exception as e:
-                logger.error(f"Corrupt soul file: {e}")
-        return SoulState(last_interaction=time.time())
+                self.state_file.rename(backup_path)
+                logger.warning(f"Backed up corrupt file to {backup_path}")
+            except Exception as backup_err:
+                logger.error(f"Could not backup corrupt file: {backup_err}")
+            return SoulState(last_interaction=time.time())
+        except (PermissionError, IOError) as e:
+            logger.error(f"Cannot read soul file: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error loading soul state: {e}")
+            return SoulState(last_interaction=time.time())
 
     def save(self):
-        with open(self.state_file, 'w', encoding='utf-8') as f:
-            json.dump(asdict(self.state), f, indent=2)
+        try:
+            with open(self.state_file, 'w', encoding='utf-8') as f:
+                json.dump(asdict(self.state), f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save soul state: {e}")
 
     def update_circadian_rhythm(self):
         """Adjusts Energy based on time of day (Biomimicry)."""

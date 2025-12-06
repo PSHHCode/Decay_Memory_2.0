@@ -1,34 +1,50 @@
 version: '3.8'
 
 services:
-  # 1. THE MEMORY (Vector Database)
+  # 1. DATABASE
   qdrant:
-    image: qdrant/qdrant
+    image: qdrant/qdrant:latest
     container_name: decay_memory_db
-    ports:
-      - "6333:6333"
     volumes:
-      - ./qdrant_data:/qdrant/storage
-    restart: always
+      - qdrant_storage:/qdrant/storage
+    expose:
+      - "6333"
+    restart: unless-stopped
 
-  # 2. THE BRAIN (Your Python API)
-  her_app:
-    build: .
+  # 2. BACKEND
+  decay_memory_core:
+    build: 
+      context: .
+      dockerfile: Dockerfile
     container_name: decay_memory_core
-    ports:
-      - "8000:8080"  # Map PC port 8000 to Container port 8080
+    expose:
+      - "8080"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      # Inside Docker, 'localhost' is the container itself.
-      # We must point to the 'qdrant' service name defined above.
-      - QDRANT_HOST=qdrant 
+      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
+      - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
     volumes:
-      # Persist the Soul and Flight Recorders to your actual disk
       - ./flight_recorders:/app/flight_recorders
       - ./soul_state.json:/app/soul_state.json
       - ./heartbeat_mood.json:/app/heartbeat_mood.json
     depends_on:
       - qdrant
+    restart: unless-stopped
+
+  # 3. FRONTEND
+  frontend:
+    build: ./frontend
+    container_name: decay_memory_ui
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - decay_memory_core
     restart: always
+
+volumes:
+  qdrant_storage:

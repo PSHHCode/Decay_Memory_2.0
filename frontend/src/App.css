@@ -1,0 +1,115 @@
+:root {
+  --bg-color: #0d1117;
+  --sidebar-bg: #161b22;
+  --text-primary: #c9d1d9;
+  --accent: #58a6ff;
+  --user-bubble: #1f6feb;
+  --ai-bubble: #21262d;
+}
+
+body, html, #root {
+  margin: 0;
+  height: 100%;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 900px;
+  margin: 0 auto;
+  border-left: 1px solid #30363d;
+  border-right: 1px solid #30363d;
+}
+
+.header {
+  padding: 1rem;
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--sidebar-bg);
+}
+
+.logo-area { display: flex; align-items: center; gap: 10px; color: var(--accent); }
+.logo-area h1 { font-size: 1.2rem; margin: 0; }
+
+.status-bar { font-size: 0.8rem; color: #8b949e; text-align: right; }
+
+.chat-window {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.message-row { display: flex; gap: 12px; }
+.message-row.user { flex-direction: row-reverse; }
+
+.avatar {
+  min-width: 36px; height: 36px;
+  border-radius: 50%;
+  background: #30363d;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.message-bubble {
+  background: var(--ai-bubble);
+  padding: 10px 16px;
+  border-radius: 12px;
+  max-width: 80%;
+  line-height: 1.5;
+  position: relative;
+}
+
+.message-row.user .message-bubble {
+  background: var(--user-bubble);
+  color: white;
+}
+
+.meta-tag {
+  font-size: 0.7rem;
+  color: #8b949e;
+  margin-top: 8px;
+  border-top: 1px solid #30363d;
+  padding-top: 4px;
+}
+
+.input-area {
+  padding: 1.5rem;
+  border-top: 1px solid #30363d;
+  background: var(--bg-color);
+}
+
+.input-wrapper {
+  display: flex;
+  gap: 10px;
+  background: var(--sidebar-bg);
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+}
+
+input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: white;
+  padding: 8px;
+  outline: none;
+}
+
+button {
+  background: var(--accent);
+  border: none;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; }
