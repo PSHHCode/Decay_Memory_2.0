@@ -1059,10 +1059,37 @@ async def curiosity_add(request: CuriosityAddRequest):
     return {"result": f"✅ Added '{request.topic}' to curiosity queue"}
 
 @app.post("/curiosity/explore")
-async def curiosity_explore_now():
-    """Manually trigger an exploration cycle."""
+async def curiosity_explore_now(force: bool = False):
+    """
+    Manually trigger an exploration cycle.
+    
+    Args:
+        force: If True, bypass idle check (useful for testing)
+    """
     if curiosity_engine is None:
         raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    
+    if force:
+        # Directly explore without constraint checks
+        from curiosity_engine import explore_topic, form_opinion
+        
+        item = curiosity_engine.queue.get_next()
+        if not item:
+            return {"result": "No topics in queue"}
+        
+        logger.info(f"🔍 Force exploring: {item.topic}")
+        
+        exploration = await explore_topic(item.topic)
+        if "error" in exploration:
+            return {"result": "Exploration failed", "error": exploration["error"]}
+        
+        opinion = await form_opinion(item.topic, exploration, "")
+        result = {**exploration, "opinion": opinion, "topic": item.topic, "source": item.source}
+        
+        curiosity_engine.queue.mark_explored(item.topic, result)
+        await curiosity_engine._store_exploration_memory(item.topic, result)
+        
+        return {"result": "✅ Exploration complete", "exploration": result}
     
     result = await curiosity_engine.explore_cycle()
     if result is None:
