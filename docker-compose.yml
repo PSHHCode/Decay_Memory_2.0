@@ -37,7 +37,10 @@ services:
 
   # 3. FRONTEND
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_KEY=${DECAY_API_SECRET}
     container_name: decay_memory_ui
     ports:
       - "80:80"

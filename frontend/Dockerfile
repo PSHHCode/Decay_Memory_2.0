@@ -5,6 +5,10 @@
 # --- STAGE 1: Build React app ---
 FROM node:22-alpine AS build
 
+# Build argument for API key (passed at build time)
+ARG VITE_API_KEY
+ENV VITE_API_KEY=$VITE_API_KEY
+
 WORKDIR /app
 
 # Copy package files first (better layer caching)

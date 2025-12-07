@@ -14,6 +14,17 @@ interface Message {
 // API Configuration - Uses relative URLs, nginx handles routing
 // =============================================================================
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+
+// Helper for authenticated fetch
+const authFetch = (url: string, options: RequestInit = {}) => {
+  const headers = new Headers(options.headers);
+  if (API_KEY) {
+    headers.set('X-API-Key', API_KEY);
+  }
+  headers.set('Content-Type', 'application/json');
+  return fetch(url, { ...options, headers });
+};
 
 function App() {
   const [input, setInput] = useState('');
@@ -32,7 +43,7 @@ function App() {
   useEffect(() => {
     const pollHeartbeat = async () => {
       try {
-        const res = await fetch(`${API_BASE}/notifications`);
+        const res = await authFetch(`${API_BASE}/notifications`);
         if (!res.ok) return;
         const data = await res.json();
         if (data.notifications && data.notifications.length > 0) {
@@ -53,7 +64,7 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // 2. Health Check (uses relative URL)
+  // 2. Health Check (uses relative URL - public endpoint, no auth needed)
   useEffect(() => {
     const checkHealth = async () => {
       try {
@@ -84,9 +95,8 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/chat`, {
+      const response = await authFetch(`${API_BASE}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg.content, project: project }),
       });
 
