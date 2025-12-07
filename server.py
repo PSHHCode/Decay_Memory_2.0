@@ -697,3 +697,59 @@ async def reload_config():
     import config as cfg
     cfg.reload_config()
     return {"result": "✅ Config reloaded"}
+
+
+# =============================================================================
+# SOUL / EMOTIONAL STATE ENDPOINTS (Phase 1 - Enhanced)
+# =============================================================================
+
+@app.get("/soul/state")
+async def get_soul_state():
+    """Get current emotional state including VAD model."""
+    return state.soul.get_emotional_context()
+
+@app.get("/soul/vad")
+async def get_soul_vad():
+    """Get current VAD (Valence-Arousal-Dominance) state."""
+    vad = state.soul.get_current_vad()
+    return vad.to_dict()
+
+@app.get("/soul/prompt")
+async def get_soul_prompt():
+    """Get the system prompt generated from soul state."""
+    return {"prompt": state.soul.get_system_prompt()}
+
+@app.post("/soul/trigger/{trigger_name}")
+async def trigger_emotion(trigger_name: str):
+    """
+    Apply an emotional trigger.
+    Valid triggers: greeting_morning, deep_conversation, user_shares_problem,
+    user_shares_joy, long_absence, late_night, playful_exchange, philosophical_topic
+    """
+    from soul import MOOD_TRIGGERS
+    if trigger_name not in MOOD_TRIGGERS:
+        raise HTTPException(status_code=400, detail=f"Unknown trigger: {trigger_name}. Valid: {list(MOOD_TRIGGERS.keys())}")
+    
+    success = state.soul._trigger_transition(trigger_name)
+    state.soul.save()
+    return {"result": f"✅ Trigger '{trigger_name}' applied", "new_state": state.soul.get_emotional_context()}
+
+class EmotionAnalysisRequest(BaseModel):
+    text: str
+
+@app.post("/soul/analyze")
+async def analyze_emotion(request: EmotionAnalysisRequest):
+    """
+    Analyze emotional content of text using Gemini.
+    Returns VAD scores and emotion labels for memory tagging.
+    """
+    from soul import analyze_text_emotion
+    result = await asyncio.to_thread(analyze_text_emotion, request.text)
+    if result is None:
+        raise HTTPException(status_code=500, detail="Emotion analysis failed (check GEMINI_API_KEY)")
+    return result
+
+@app.get("/soul/history")
+async def get_mood_history():
+    """Get recent mood transition history."""
+    return {"history": state.soul.state.mood_history[-20:]}
