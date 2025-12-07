@@ -492,3 +492,80 @@ async def resolve_conflict_manual(old_id: str, request: ConflictCheckRequest):
         raise HTTPException(status_code=500, detail="Failed to resolve conflict (check GEMINI_API_KEY)")
     
     return result
+
+
+# =============================================================================
+# SESSION MANAGEMENT ENDPOINTS (Restored from v1.0)
+# =============================================================================
+
+class FinalizeSessionRequest(BaseModel):
+    summary: str
+    project: str = "global"
+
+class HandoverRequest(BaseModel):
+    project: str = ""
+    format: str = "condensed"  # full, condensed, minimal
+    max_turns: int = 20
+
+@app.get("/session/state")
+async def get_session_state(project: str = "global"):
+    """Get current session state (turn count, start time, etc.)."""
+    result = await asyncio.to_thread(
+        state.memory.get_session_state,
+        project
+    )
+    return result
+
+@app.post("/session/reset")
+async def reset_session(project: str = "global"):
+    """Reset session state for a project."""
+    await asyncio.to_thread(
+        state.memory.reset_session,
+        project,
+        False  # init_only
+    )
+    return {"result": f"✅ Session reset for project: {project or 'global'}"}
+
+@app.post("/session/finalize")
+async def finalize_session(request: FinalizeSessionRequest):
+    """
+    Finalize a session:
+    1. Extract facts from summary via LLM
+    2. Store as long-term memories
+    3. Create handover document for next session
+    4. Clean up flight recorder
+    """
+    result = await state.memory.finalize_session_async(
+        request.summary,
+        request.project
+    )
+    return {"result": result}
+
+@app.post("/session/handover")
+async def get_handover(request: HandoverRequest):
+    """
+    Get context for resuming a session.
+    
+    Formats:
+    - full: Complete turn history
+    - condensed: Summarized turns (default)
+    - minimal: Just topics + last 5 turns
+    """
+    result = await asyncio.to_thread(
+        state.memory.get_handover,
+        request.project,
+        request.format,
+        request.max_turns
+    )
+    return {"handover": result}
+
+@app.get("/session/handover/{project}")
+async def get_handover_simple(project: str, format: str = "condensed", max_turns: int = 20):
+    """Simple GET endpoint for handover."""
+    result = await asyncio.to_thread(
+        state.memory.get_handover,
+        project,
+        format,
+        max_turns
+    )
+    return {"handover": result}
