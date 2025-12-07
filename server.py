@@ -100,44 +100,52 @@ class SystemState:
 
 state = SystemState()
 
-# --- HEARTBEAT ENGINE (Background Task) ---
+# --- HEARTBEAT ENGINE V2.0 ---
+from heartbeat_service import HeartbeatEngine, HeartbeatConfig
+
+# Heartbeat will be initialized in lifespan after memory/soul are ready
+heartbeat_engine: Optional[HeartbeatEngine] = None
+
 async def heartbeat_loop():
-    """Runs forever. Checks context and decides if AI should speak."""
-    logger.info("❤️ Heartbeat Loop Started")
+    """
+    Heartbeat V2.0: Full decision engine with LLM-powered decisions.
+    Checks context (time, weather, memories) and decides if AI should reach out.
+    """
+    global heartbeat_engine
+    
+    # Wait for initialization
+    while heartbeat_engine is None:
+        await asyncio.sleep(1)
+    
+    logger.info("❤️ Heartbeat Loop Started (V2.0)")
+    
     while True:
         try:
-            await asyncio.sleep(state.heartbeat_interval)
+            # Run heartbeat cycle
+            decision = await heartbeat_engine.cycle()
             
-            # 1. Context Check
-            now = datetime.now()
-            # Skip if late night (10PM - 7AM)
-            if now.hour >= 22 or now.hour < 7:
-                continue
-
-            # 2. Get Weather (Simple check)
-            weather_context = "Unknown"
-            if WEATHER_KEY:
-                # We would do the requests.get here, kept simple for snippet
-                pass
-            
-            # 3. Proactive Retrieval (What is relevant right now?)
-            query = f"It is {now.strftime('%A %I:%M %p')}."
-            memories = await asyncio.to_thread(
-                state.memory.proactive_retrieval,
-                user_id=state.user_id,
-                user_message=query, 
-                project_name="global"
-            )
-            
-            # 4. Decision (Mocked for now, can connect to LLM)
-            # Real implementation would ask LLM: "Given these memories, should I text the user?"
+            # If there's a pending message, queue a notification
+            if decision.get("should_speak") and decision.get("message"):
+                await state.add_notification({
+                    "type": "heartbeat",
+                    "message": decision["message"],
+                    "reason": decision.get("reason", ""),
+                    "tone": decision.get("tone", "neutral"),
+                    "timestamp": time.time()
+                })
+                heartbeat_engine.acknowledge_message()
             
         except Exception as e:
             logger.error(f"Heartbeat Error: {e}")
+        
+        # Sleep for interval (default 5 minutes)
+        await asyncio.sleep(heartbeat_engine.config.interval_seconds if heartbeat_engine else 300)
 
 # --- LIFECYCLE MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_engine
+    
     # Startup
     logger.info("Booting Memory System (Qdrant)...")
     state.memory = MemorySystem()
@@ -148,12 +156,23 @@ async def lifespan(app: FastAPI):
     history = load_chat_history_for_gemini(state.current_project)
     state.chat_session = model.start_chat(history=history)
     
-    # Start Heartbeat
+    # Initialize Heartbeat Engine V2.0
+    logger.info("Starting Heartbeat V2.0...")
+    heartbeat_engine = HeartbeatEngine(
+        memory_system=state.memory,
+        soul=state.soul,
+        config=HeartbeatConfig.from_env()
+    )
+    
+    # Start Heartbeat Background Task
     asyncio.create_task(heartbeat_loop())
     
     logger.info(f"System Online. Loaded {len(history)//2} turns.")
     yield
+    
     # Shutdown
+    if heartbeat_engine:
+        heartbeat_engine.stop()
     logger.info("System Shutting Down.")
 
 app = FastAPI(lifespan=lifespan)
@@ -827,3 +846,50 @@ async def search_by_mood(mood: str, project: str = "global", limit: int = 5):
         limit
     )
     return {"mood": mood, "vad": {"valence": v, "arousal": a, "dominance": d}, "results": result}
+
+
+# =============================================================================
+# HEARTBEAT ENDPOINTS (Phase 2 - Proactive Companion)
+# =============================================================================
+
+@app.get("/heartbeat/status")
+async def heartbeat_status():
+    """Get current heartbeat engine status."""
+    if heartbeat_engine is None:
+        raise HTTPException(status_code=503, detail="Heartbeat not initialized")
+    return heartbeat_engine.get_status()
+
+@app.get("/heartbeat/pending")
+async def heartbeat_pending():
+    """Get any pending proactive message from heartbeat."""
+    if heartbeat_engine is None:
+        raise HTTPException(status_code=503, detail="Heartbeat not initialized")
+    pending = heartbeat_engine.get_pending_message()
+    if pending:
+        return pending
+    return {"message": None}
+
+@app.post("/heartbeat/trigger")
+async def heartbeat_trigger():
+    """
+    Manually trigger a heartbeat cycle.
+    Useful for testing or forcing a check-in.
+    """
+    if heartbeat_engine is None:
+        raise HTTPException(status_code=503, detail="Heartbeat not initialized")
+    decision = await heartbeat_engine.cycle()
+    return decision
+
+@app.post("/heartbeat/acknowledge")
+async def heartbeat_acknowledge():
+    """Acknowledge that a pending message was delivered."""
+    if heartbeat_engine is None:
+        raise HTTPException(status_code=503, detail="Heartbeat not initialized")
+    heartbeat_engine.acknowledge_message()
+    return {"result": "✅ Message acknowledged"}
+
+@app.get("/notifications")
+async def get_notifications():
+    """Get queued notifications (from heartbeat and other sources)."""
+    notifications = await state.get_notifications()
+    return {"notifications": notifications}
