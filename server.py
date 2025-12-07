@@ -657,3 +657,43 @@ async def proactive_retrieve(request: ProactiveRetrievalRequest):
         request.time_since_last
     )
     return {"context": result}
+
+
+# =============================================================================
+# HOT-RELOAD CONFIG ENDPOINTS (Restored from v1.0)
+# =============================================================================
+
+class ConfigUpdateRequest(BaseModel):
+    path: str
+    value: Any
+
+@app.get("/config")
+async def get_config():
+    """Get full configuration (hot-reloaded from disk)."""
+    import config as cfg
+    return cfg.get_full_config()
+
+@app.get("/config/{path:path}")
+async def get_config_value(path: str):
+    """Get a specific config value by path (e.g., 'half_lives.personal')."""
+    import config as cfg
+    value = cfg.get_config_value(path, None)
+    if value is None:
+        raise HTTPException(status_code=404, detail=f"Config path not found: {path}")
+    return {"path": path, "value": value}
+
+@app.put("/config")
+async def set_config_value(request: ConfigUpdateRequest):
+    """Set a config value and save to disk (hot-reload)."""
+    import config as cfg
+    success = cfg.set_config_value(request.path, request.value)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update config")
+    return {"result": "✅ Config updated", "path": request.path, "value": request.value}
+
+@app.post("/config/reload")
+async def reload_config():
+    """Force reload configuration from disk."""
+    import config as cfg
+    cfg.reload_config()
+    return {"result": "✅ Config reloaded"}
