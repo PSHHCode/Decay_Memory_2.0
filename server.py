@@ -15,8 +15,11 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -45,8 +48,55 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 WEATHER_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 
+# API Authentication
+API_SECRET = os.getenv("DECAY_API_SECRET")  # Required for all API calls
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() == "true"
+
 # Default user for single-user deployment
 DEFAULT_USER_ID = "default_user"
+
+# --- API KEY AUTHENTICATION ---
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# Endpoints that don't require authentication
+PUBLIC_ENDPOINTS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Middleware to enforce API key authentication."""
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth if disabled
+        if not AUTH_ENABLED:
+            return await call_next(request)
+        
+        # Skip auth for public endpoints
+        path = request.url.path
+        if path in PUBLIC_ENDPOINTS or path.startswith("/docs") or path.startswith("/redoc"):
+            return await call_next(request)
+        
+        # Check for API key
+        api_key = request.headers.get("X-API-Key")
+        
+        if not API_SECRET:
+            # No secret configured - log warning but allow (for backwards compat)
+            logger.warning("⚠️ DECAY_API_SECRET not set - API is unprotected!")
+            return await call_next(request)
+        
+        if not api_key:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing API key. Include 'X-API-Key' header."}
+            )
+        
+        if api_key != API_SECRET:
+            logger.warning(f"❌ Invalid API key attempt from {request.client.host}")
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Invalid API key"}
+            )
+        
+        return await call_next(request)
 
 if not API_KEY or not OPENAI_KEY:
     logger.error("CRITICAL: API Keys missing in .env")
@@ -192,6 +242,9 @@ async def lifespan(app: FastAPI):
     logger.info("System Shutting Down.")
 
 app = FastAPI(lifespan=lifespan)
+
+# Add Authentication Middleware FIRST
+app.add_middleware(AuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
