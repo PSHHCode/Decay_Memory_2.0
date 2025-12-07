@@ -413,3 +413,82 @@ async def get_memory(memory_id: str):
     if result is None:
         raise HTTPException(status_code=404, detail="Memory not found")
     return result
+
+
+# =============================================================================
+# CONFLICT RESOLUTION ENDPOINTS (Restored from v1.0)
+# =============================================================================
+
+class ConflictCheckRequest(BaseModel):
+    content: str
+    memory_type: str = "personal"
+    project: str = "global"
+
+class AddMemoryWithConflictRequest(BaseModel):
+    content: str
+    memory_type: str = "personal"
+    project: str = "global"
+    auto_resolve: bool = True
+
+@app.post("/memory/check-conflict")
+async def check_conflict(request: ConflictCheckRequest):
+    """
+    Check if new content conflicts with existing memories.
+    Returns the conflicting memory if found, null otherwise.
+    """
+    result = await asyncio.to_thread(
+        state.memory.check_conflict,
+        request.content,
+        request.memory_type,
+        request.project
+    )
+    return {"conflict": result}
+
+@app.post("/memory/add-with-conflict-check")
+async def add_memory_with_conflict_check(request: AddMemoryWithConflictRequest):
+    """
+    Add a memory with automatic conflict detection and resolution.
+    
+    If auto_resolve=True and a conflict is found:
+    - SUPERSEDE: Old memory archived, new one stored
+    - UPDATE/COMPLEMENT: Memories merged via LLM
+    - UNRELATED: New memory stored normally
+    
+    If auto_resolve=False and conflict found:
+    - Returns conflict info without storing anything
+    """
+    result = await asyncio.to_thread(
+        state.memory.add_memory_with_conflict_check,
+        state.user_id,
+        request.content,
+        request.memory_type,
+        request.project,
+        request.auto_resolve
+    )
+    return result
+
+@app.post("/memory/{old_id}/resolve-conflict")
+async def resolve_conflict_manual(old_id: str, request: ConflictCheckRequest):
+    """
+    Manually resolve a conflict between an existing memory and new content.
+    Returns the LLM's analysis of the relationship.
+    """
+    # First get the old memory
+    old_memory = await asyncio.to_thread(
+        state.memory.get_memory,
+        old_id
+    )
+    if not old_memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    
+    # Get LLM resolution
+    result = await asyncio.to_thread(
+        state.memory.resolve_conflict,
+        request.content,
+        old_memory
+    )
+    
+    if result is None:
+        raise HTTPException(status_code=500, detail="Failed to resolve conflict (check GEMINI_API_KEY)")
+    
+    return result

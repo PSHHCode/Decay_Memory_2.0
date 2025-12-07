@@ -40,6 +40,11 @@ BOOST_INCREMENT = 1.5      # Multiply boost by this each time
 MAX_BOOST = 4.0            # Maximum boost multiplier
 DEPRECATION_MULTIPLIER = 0.1  # Decay 10x faster when deprecated
 
+# Conflict Resolution Constants (from v1.0)
+CONFLICT_TYPES = {'personal', 'preference', 'goal', 'project'}  # Types to check for conflicts
+CONFLICT_SIMILARITY_THRESHOLD = 0.85  # Similarity score to consider as potential conflict
+CONFLICT_CONFIDENCE_THRESHOLD = 0.8   # LLM confidence required to auto-resolve
+
 PROACTIVE_CONFIG = {
     "enabled": True,
     "trigger_threshold": 0.60,
@@ -388,3 +393,257 @@ class MemorySystem:
         except Exception as e:
             logger.error(f"get_memory failed: {e}")
             return None
+
+    # =========================================================================
+    # CONFLICT RESOLUTION SYSTEM (Restored from v1.0)
+    # =========================================================================
+    
+    def check_conflict(self, content: str, mtype: str, proj: str) -> Optional[Dict[str, Any]]:
+        """
+        Check for existing memories that might conflict with new content.
+        Returns the conflicting memory if similarity > threshold, else None.
+        """
+        if mtype not in CONFLICT_TYPES:
+            return None
+        
+        vec = embedding_helper.embed(content)
+        if vec is None:
+            logger.warning("Failed to generate embedding for conflict check")
+            return None
+        
+        # Build filter: must match type AND (project OR global)
+        type_condition = FieldCondition(key="type", match=MatchValue(value=mtype))
+        
+        if proj and proj not in ["", "global", "*"]:
+            # Project-specific: include project memories and global
+            combined_filter = Filter(
+                must=[type_condition],
+                should=[
+                    FieldCondition(key="project_name", match=MatchValue(value=proj)),
+                    FieldCondition(key="project_name", match=MatchValue(value="")),
+                    FieldCondition(key="project_name", match=MatchValue(value="global")),
+                    IsNullCondition(is_null=PayloadField(key="project_name"))
+                ]
+            )
+        else:
+            # Global only
+            combined_filter = Filter(
+                must=[type_condition],
+                should=[
+                    FieldCondition(key="project_name", match=MatchValue(value="")),
+                    FieldCondition(key="project_name", match=MatchValue(value="global")),
+                    IsNullCondition(is_null=PayloadField(key="project_name"))
+                ]
+            )
+        
+        try:
+            hits = self.client.search(
+                COLLECTION, 
+                query_vector=NamedVector(name="dense", vector=vec),
+                query_filter=combined_filter, 
+                limit=5, 
+                with_payload=True
+            )
+            
+            for h in hits:
+                if h.score >= CONFLICT_SIMILARITY_THRESHOLD:
+                    logger.info(f"Potential conflict found: {h.payload.get('content', '')[:50]}... (score: {h.score:.2f})")
+                    return h.payload | {'id': h.id, 'similarity': h.score}
+            return None
+        except Exception as e:
+            logger.error(f"check_conflict failed: {e}")
+            return None
+    
+    def resolve_conflict(self, new_content: str, old_memory: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Use Gemini LLM to determine relationship between conflicting memories.
+        Returns: {"rel": "supersede|update|complement|unrelated", "merged": "...", "conf": 0.9}
+        """
+        try:
+            import google.generativeai as genai
+            import os
+            
+            # Configure Gemini if not already
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                logger.warning("GEMINI_API_KEY not set, cannot resolve conflict via LLM")
+                return None
+            
+            genai.configure(api_key=api_key)
+            
+            prompt = (
+                f'Compare these two pieces of information about the same topic:\n\n'
+                f'EXISTING: "{old_memory.get("content")}"\n'
+                f'NEW: "{new_content}"\n\n'
+                f'Determine their relationship:\n'
+                f'1. SUPERSEDE - New completely replaces old (old is outdated)\n'
+                f'2. UPDATE - New modifies/corrects old (merge them)\n'
+                f'3. COMPLEMENT - Both are valid, can coexist\n'
+                f'4. UNRELATED - Not actually about the same thing\n\n'
+                f'Return JSON: {{ "rel": "supersede|update|complement|unrelated", "merged": "merged text if UPDATE", "conf": confidence_0_to_1, "reason": "brief explanation" }}'
+            )
+            
+            model = genai.GenerativeModel(
+                'gemini-2.0-flash',
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response = model.generate_content(prompt)
+            result = json.loads(response.text)
+            logger.info(f"Conflict resolution: {result.get('rel')} (conf: {result.get('conf', 0):.2f})")
+            return result
+        except Exception as e:
+            logger.error(f"resolve_conflict failed: {e}")
+            return None
+    
+    def replace_memory(self, old_id: str, new_content: str, old_mem: Dict[str, Any]) -> Optional[str]:
+        """
+        Replace an old memory with new content.
+        Archives the old memory and creates new one with same metadata.
+        """
+        import uuid
+        
+        dense_vec = embedding_helper.embed(new_content)
+        if dense_vec is None:
+            logger.warning("Failed to generate embedding for replacement")
+            return None
+        
+        try:
+            # Archive old memory (soft delete, preserves history)
+            self.client.set_payload(
+                COLLECTION,
+                {
+                    "type": "archived_superseded",
+                    "superseded_at": time.time(),
+                    "superseded_reason": "conflict_resolution"
+                },
+                points=[old_id]
+            )
+            
+            # Create new memory with same metadata
+            new_payload = {
+                "content": new_content,
+                "type": old_mem.get('type', 'personal'),
+                "project_name": old_mem.get('project_name', 'global'),
+                "user_id": old_mem.get('user_id', 'default_user'),
+                "timestamp": time.time(),
+                "score": 1.0,
+                "boost_factor": old_mem.get('boost_factor', 1.0),  # Preserve boost
+                "supersedes": old_id  # Link to old memory
+            }
+            
+            pid = str(uuid.uuid4())
+            
+            if ENABLE_HYBRID_SEARCH:
+                sparse_vec = self._generate_sparse_vector(new_content)
+                point = PointStruct(
+                    id=pid,
+                    vector={
+                        "dense": dense_vec,
+                        SPARSE_VECTOR_NAME: SparseVector(
+                            indices=list(sparse_vec.keys()),
+                            values=list(sparse_vec.values())
+                        )
+                    },
+                    payload=new_payload
+                )
+            else:
+                point = PointStruct(id=pid, vector=dense_vec, payload=new_payload)
+            
+            self.client.upsert(COLLECTION, points=[point])
+            logger.info(f"Replaced memory {old_id} with {pid}")
+            return pid
+        except Exception as e:
+            logger.error(f"replace_memory failed: {e}")
+            return None
+    
+    def add_memory_with_conflict_check(
+        self, 
+        user_id: str, 
+        content: str, 
+        mtype: str = "personal", 
+        proj: str = "global",
+        auto_resolve: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Add a memory with automatic conflict detection and resolution.
+        
+        Returns dict with:
+        - status: "added" | "superseded" | "merged" | "conflict_detected"
+        - memory_id: the ID of the new/updated memory
+        - details: additional info about what happened
+        """
+        import uuid
+        
+        # Check for conflicts
+        conflict = self.check_conflict(content, mtype, proj)
+        
+        if conflict and auto_resolve:
+            resolution = self.resolve_conflict(content, conflict)
+            
+            if resolution and resolution.get('conf', 0) > CONFLICT_CONFIDENCE_THRESHOLD:
+                rel = resolution.get('rel', '').lower()
+                
+                if rel == 'supersede':
+                    new_id = self.replace_memory(conflict['id'], content, conflict)
+                    return {
+                        "status": "superseded",
+                        "memory_id": new_id,
+                        "old_id": conflict['id'],
+                        "details": f"Superseded old memory: {conflict.get('content', '')[:50]}..."
+                    }
+                
+                elif rel in ['update', 'complement']:
+                    merged_content = resolution.get('merged', content)
+                    new_id = self.replace_memory(conflict['id'], merged_content, conflict)
+                    return {
+                        "status": "merged",
+                        "memory_id": new_id,
+                        "old_id": conflict['id'],
+                        "details": f"Merged: {merged_content[:50]}..."
+                    }
+                
+                # 'unrelated' falls through to normal add
+        
+        elif conflict and not auto_resolve:
+            # Return conflict info without resolving
+            return {
+                "status": "conflict_detected",
+                "memory_id": None,
+                "conflict": conflict,
+                "details": f"Potential conflict with: {conflict.get('content', '')[:50]}..."
+            }
+        
+        # No conflict or unrelated - normal add
+        dense_vec = embedding_helper.embed(content)
+        if not dense_vec:
+            return {"status": "error", "memory_id": None, "details": "Embedding failed"}
+        
+        pid = str(uuid.uuid4())
+        payload = {
+            "content": content,
+            "type": mtype,
+            "project_name": proj,
+            "user_id": user_id,
+            "timestamp": time.time(),
+            "score": 1.0,
+            "boost_factor": 1.0
+        }
+        
+        if ENABLE_HYBRID_SEARCH:
+            sparse_vec = self._generate_sparse_vector(content)
+            point = PointStruct(
+                id=pid,
+                vector={
+                    "dense": dense_vec,
+                    SPARSE_VECTOR_NAME: SparseVector(
+                        indices=list(sparse_vec.keys()),
+                        values=list(sparse_vec.values())
+                    )
+                },
+                payload=payload
+            )
+        else:
+            point = PointStruct(id=pid, vector=dense_vec, payload=payload)
+        
+        self.client.upsert(COLLECTION, points=[point])
+        return {"status": "added", "memory_id": pid, "details": "Memory saved"}
