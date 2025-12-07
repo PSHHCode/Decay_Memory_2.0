@@ -717,9 +717,117 @@ class MemorySystem:
         processed.sort(key=lambda x: x['search_score'], reverse=True)
         return processed[:limit]
 
+    def emotional_search(
+        self, 
+        target_emotions: Dict[str, float], 
+        proj: str = "", 
+        limit: int = 5,
+        emotion_weight: float = 0.4
+    ) -> List[Dict[str, Any]]:
+        """
+        Phase 1.1: Search memories by emotional similarity.
+        
+        Combines semantic search with emotional distance scoring.
+        
+        Args:
+            target_emotions: {valence, arousal, dominance} target state
+            proj: Project filter
+            limit: Max results
+            emotion_weight: Weight of emotional similarity (0-1)
+        """
+        # Get all memories with emotions
+        proj_filter = self.get_project_filter(proj, include_global=True)
+        emotion_filter = Filter(
+            must=[
+                # Only get memories that have emotional tagging
+                FieldCondition(key="emotions.valence", range={"gte": 0, "lte": 1})
+            ]
+        )
+        
+        # Combine project and emotion filters
+        if proj_filter:
+            combined_filter = Filter(
+                must=[emotion_filter] if proj_filter.must else [],
+                should=proj_filter.should
+            )
+        else:
+            combined_filter = emotion_filter
+        
+        try:
+            # Scroll through memories with emotions
+            mems, _ = self.client.scroll(
+                COLLECTION,
+                scroll_filter=combined_filter,
+                limit=min(limit * 10, 100),  # Get more for scoring
+                with_payload=True
+            )
+            
+            if not mems:
+                return []
+            
+            # Score by emotional distance
+            target_v = target_emotions.get('valence', 0.5)
+            target_a = target_emotions.get('arousal', 0.4)
+            target_d = target_emotions.get('dominance', 0.5)
+            
+            scored = []
+            for mem in mems:
+                emotions = mem.payload.get('emotions', {})
+                if not emotions:
+                    continue
+                
+                # Calculate VAD distance (0 = identical, ~1.73 = max distance)
+                v_dist = abs(emotions.get('valence', 0.5) - target_v)
+                a_dist = abs(emotions.get('arousal', 0.4) - target_a)
+                d_dist = abs(emotions.get('dominance', 0.5) - target_d)
+                distance = (v_dist**2 + a_dist**2 + d_dist**2) ** 0.5
+                
+                # Convert distance to similarity (1 = identical, 0 = very different)
+                max_distance = 1.73  # sqrt(3)
+                emotional_similarity = 1 - (distance / max_distance)
+                
+                # Factor in recency
+                age = time.time() - mem.payload.get('timestamp', 0)
+                hl = HALF_LIVES.get(mem.payload.get('type'), 604800)
+                decay = max(0.5 ** (age / hl), DECAY_FLOOR)
+                
+                # Combined score
+                final_score = emotional_similarity * decay * mem.payload.get('boost_factor', 1.0)
+                
+                scored.append(mem.payload | {
+                    'id': mem.id, 
+                    'emotional_similarity': round(emotional_similarity, 3),
+                    'search_score': round(final_score, 3)
+                })
+            
+            # Sort by score
+            scored.sort(key=lambda x: x['search_score'], reverse=True)
+            return scored[:limit]
+            
+        except Exception as e:
+            logger.error(f"Emotional search failed: {e}")
+            return []
+
     # --- CORE: Memory Storage ---
-    def add_memory(self, user_id: str, content: str, mtype: str = "personal", proj: str = "global") -> str:
-        """Saves a new memory (Restored Logic)."""
+    def add_memory(
+        self, 
+        user_id: str, 
+        content: str, 
+        mtype: str = "personal", 
+        proj: str = "global",
+        emotions: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Saves a new memory with optional emotional tagging.
+        
+        Args:
+            user_id: User identifier
+            content: Memory content
+            mtype: Memory type (personal, project, topic, etc.)
+            proj: Project name
+            emotions: Optional emotional metadata (from soul.analyze_text_emotion)
+                      Format: {primary, secondary, valence, arousal, dominance}
+        """
         import uuid
         
         dense_vec = embedding_helper.embed(content)
@@ -730,11 +838,21 @@ class MemorySystem:
             "content": content,
             "type": mtype,
             "project_name": proj,
-            "user_id": user_id, # Added User ID support
+            "user_id": user_id,
             "timestamp": time.time(),
             "score": 1.0,
             "boost_factor": 1.0
         }
+        
+        # Phase 1.1: Add emotional metadata if provided
+        if emotions:
+            payload["emotions"] = {
+                "primary": emotions.get("primary", "neutral"),
+                "secondary": emotions.get("secondary", []),
+                "valence": emotions.get("valence", 0.5),
+                "arousal": emotions.get("arousal", 0.4),
+                "dominance": emotions.get("dominance", 0.5)
+            }
         
         if ENABLE_HYBRID_SEARCH:
             sparse_vec = self._generate_sparse_vector(content)

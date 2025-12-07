@@ -753,3 +753,58 @@ async def analyze_emotion(request: EmotionAnalysisRequest):
 async def get_mood_history():
     """Get recent mood transition history."""
     return {"history": state.soul.state.mood_history[-20:]}
+
+
+# =============================================================================
+# EMOTIONAL SEARCH ENDPOINTS (Phase 1.1)
+# =============================================================================
+
+class EmotionalSearchRequest(BaseModel):
+    valence: float = 0.5  # 0-1 (negative to positive)
+    arousal: float = 0.4  # 0-1 (calm to excited)
+    dominance: float = 0.5  # 0-1 (submissive to dominant)
+    project: str = "global"
+    limit: int = 5
+
+@app.post("/memory/emotional-search")
+async def emotional_search(request: EmotionalSearchRequest):
+    """
+    Search memories by emotional similarity (Phase 1.1).
+    
+    Find memories that match a target emotional state (VAD model).
+    Useful for "I'm feeling down, what helped before?" type queries.
+    """
+    result = await asyncio.to_thread(
+        state.memory.emotional_search,
+        {"valence": request.valence, "arousal": request.arousal, "dominance": request.dominance},
+        request.project,
+        request.limit
+    )
+    return {"results": result}
+
+@app.post("/memory/search-by-mood")
+async def search_by_mood(mood: str, project: str = "global", limit: int = 5):
+    """
+    Search memories by named mood (Phase 1.1).
+    
+    Converts mood name to VAD and searches.
+    Valid moods: joyful, excited, content, peaceful, warm, loving, playful,
+    curious, hopeful, neutral, thoughtful, focused, concerned, anxious,
+    sad, melancholic, tired, frustrated, lonely
+    """
+    from soul import EMOTION_VAD_MAP
+    
+    if mood not in EMOTION_VAD_MAP:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unknown mood: {mood}. Valid: {list(EMOTION_VAD_MAP.keys())}"
+        )
+    
+    v, a, d = EMOTION_VAD_MAP[mood]
+    result = await asyncio.to_thread(
+        state.memory.emotional_search,
+        {"valence": v, "arousal": a, "dominance": d},
+        project,
+        limit
+    )
+    return {"mood": mood, "vad": {"valence": v, "arousal": a, "dominance": d}, "results": result}
