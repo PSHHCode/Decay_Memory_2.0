@@ -941,7 +941,7 @@ class MemorySystem:
                 output.append("⚠️ No previous session found. Starting fresh.")
         
         # Read flight recorder
-        turns = read_rec(proj)
+        turns = read_rec(proj, "default_user")
         
         if turns:
             recent_turns = turns[-max_turns:] if len(turns) > max_turns else turns
