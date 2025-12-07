@@ -203,10 +203,14 @@ async def enrich_context(user_input: str) -> str:
     return f"{soul_prompt}\n\n[RECALLED MEMORIES]\n{memories}\n\n[USER MESSAGE]\n{user_input}"
 
 async def run_librarian(user_input: str, ai_response: str, project: str):
-    """Background task: Extract and save facts from conversation."""
+    """
+    Background task: Extract and save facts from conversation.
+    Phase 1.1: Now includes emotional analysis for each fact.
+    """
     if len(user_input) < 8: 
         return
     
+    # Step 1: Extract facts
     prompt = f"""
     Analyze interaction. Extract NEW, PERMANENT facts about user.
     User: {user_input}
@@ -218,13 +222,28 @@ async def run_librarian(user_input: str, ai_response: str, project: str):
         facts = json.loads(res.text).get("facts", [])
         if facts:
             logger.info(f"Librarian: Saving {len(facts)} memories to {project}.")
+            
+            # Step 2: Get current emotional context from Soul
+            current_emotions = state.soul.get_emotion_for_memory()
+            
             for fact in facts:
+                # Step 3: Analyze fact-specific emotion (async)
+                try:
+                    from soul import analyze_text_emotion
+                    fact_emotions = await asyncio.to_thread(analyze_text_emotion, fact)
+                    if not fact_emotions:
+                        fact_emotions = current_emotions
+                except Exception:
+                    fact_emotions = current_emotions
+                
+                # Step 4: Save with emotional metadata
                 await asyncio.to_thread(
                     state.memory.add_memory, 
                     state.user_id,
                     fact, 
                     "personal", 
-                    project
+                    project,
+                    fact_emotions  # Pass emotions to add_memory
                 )
     except Exception as e:
         logger.error(f"Librarian failed: {e}")
