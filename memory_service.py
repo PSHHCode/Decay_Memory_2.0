@@ -9,6 +9,7 @@ import asyncio
 import re
 from typing import Optional, List, Dict, Any, Set
 from collections import Counter
+import networkx as nx
 
 # Import Modular Services (Created by CLI)
 import flight_recorder_service
@@ -59,6 +60,11 @@ STOP_WORDS = {'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 
 # Session Management Constants (from v1.0)
 EMBED_DIM = 1536  # OpenAI embedding dimension
 MAX_RAW_SUMMARY_LENGTH = 500  # Max chars for raw summary fallback
+
+# Knowledge Graph Constants (from v1.0)
+GRAPH_CACHE_SECONDS = 300  # Rebuild graph every 5 minutes
+GRAPH_AUTO_INVALIDATE = True  # Auto-invalidate on memory changes
+MAX_SCROLL_LIMIT = 10000  # Max memories to scan for graph building
 
 logger = logging.getLogger("DecayMemory")
 
@@ -142,11 +148,269 @@ def format_recent_turns(turns: List[Dict[str, Any]]) -> str:
         formatted.append(f"USER: {user}\nAI: {ai}")
     return "\n\n---\n\n".join(formatted)
 
+
+# =============================================================================
+# KNOWLEDGE GRAPH EXTRACTION (Restored from v1.0)
+# =============================================================================
+
+def extract_knowledge_graph_data(content: str) -> Optional[Dict[str, Any]]:
+    """Extract entities and relationships using Gemini."""
+    import os
+    try:
+        import google.generativeai as genai
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return None
+        genai.configure(api_key=api_key)
+    except ImportError:
+        return None
+    
+    prompt = (
+        f"Extract entities and relationships from this text. "
+        f"Return JSON: {{'entities': [{{'name':..., 'type':...}}], "
+        f"'relationships': [{{'from':..., 'to':..., 'type':...}}]}}\n\n"
+        f"Text: {content}"
+    )
+    try:
+        res = genai.GenerativeModel(
+            'gemini-2.0-flash',
+            generation_config={"response_mime_type": "application/json"}
+        ).generate_content(prompt)
+        data = json.loads(res.text)
+        return data if data.get('entities') or data.get('relationships') else None
+    except Exception as e:
+        logger.warning(f"Graph extraction failed: {e}")
+        return None
+
+
+# =============================================================================
+# KNOWLEDGE GRAPH BUILDER (Restored from v1.0)
+# =============================================================================
+
+class KnowledgeGraphBuilder:
+    """Builds and queries the knowledge graph from stored memories."""
+    
+    def __init__(self, client):
+        self.client = client
+        self.graph: Optional[nx.DiGraph] = None
+        self.last_build: float = 0
+    
+    def invalidate_cache(self) -> None:
+        """Force graph rebuild on next access."""
+        self.last_build = 0
+    
+    def get_graph(self) -> nx.DiGraph:
+        """Get or rebuild the knowledge graph."""
+        if not self.graph or (time.time() - self.last_build) > GRAPH_CACHE_SECONDS:
+            self.graph = self._build_graph()
+            self.last_build = time.time()
+        return self.graph
+    
+    def _build_graph(self) -> nx.DiGraph:
+        """Build graph from knowledge_graph type memories."""
+        G = nx.DiGraph()
+        try:
+            filter_kg = Filter(must=[
+                FieldCondition(key="type", match=MatchValue(value="knowledge_graph"))
+            ])
+            mems, _ = self.client.scroll(
+                COLLECTION,
+                scroll_filter=filter_kg,
+                limit=MAX_SCROLL_LIMIT,
+                with_payload=True
+            )
+            for m in mems:
+                try:
+                    d = json.loads(m.payload.get('content', '{}'))
+                except json.JSONDecodeError:
+                    continue
+                    
+                age = time.time() - m.payload.get('timestamp', 0)
+                # Half-life of 180 days for graph nodes
+                score = max(0.5**(age/15552000), 0.3)
+                
+                for e in d.get('entities', []):
+                    if not e.get('name'):
+                        continue
+                    if not G.has_node(e['name']):
+                        G.add_node(e['name'], type=e.get('type'), decay_score=score)
+                        
+                for r in d.get('relationships', []):
+                    if r.get('from') and r.get('to'):
+                        G.add_edge(r['from'], r['to'], type=r.get('type'), decay_score=score)
+                        
+            logger.info(f"Knowledge graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+        except Exception as e:
+            logger.error(f"Error building graph: {e}")
+        return G
+    
+    def find_connection(
+        self,
+        entity_a: str,
+        entity_b: str,
+        max_hops: int = 3
+    ) -> Dict[str, Any]:
+        """Find shortest path between two entities."""
+        G = self.get_graph()
+        matches_a = [n for n in G.nodes() if entity_a.lower() in n.lower()]
+        matches_b = [n for n in G.nodes() if entity_b.lower() in n.lower()]
+        
+        if not matches_a:
+            return {"error": f"Entity '{entity_a}' not found"}
+        if not matches_b:
+            return {"error": f"Entity '{entity_b}' not found"}
+        
+        best_path: Optional[Dict[str, Any]] = None
+        best_strength: float = 0
+        
+        for ma in matches_a:
+            for mb in matches_b:
+                try:
+                    path = nx.shortest_path(G, ma, mb)
+                    if len(path) - 1 > max_hops:
+                        continue
+                    
+                    node_scores = [G.nodes[n].get('decay_score', 1.0) for n in path]
+                    edge_scores = [
+                        G[path[i]][path[i+1]].get('decay_score', 1.0) 
+                        for i in range(len(path)-1)
+                    ]
+                    path_strength = min(node_scores + edge_scores)
+                    
+                    if path_strength > best_strength:
+                        best_strength = path_strength
+                        best_path = {
+                            "path": path,
+                            "relationships": [
+                                {
+                                    "from": path[i],
+                                    "to": path[i+1],
+                                    "type": G[path[i]][path[i+1]].get('type', 'unknown')
+                                }
+                                for i in range(len(path)-1)
+                            ],
+                            "strength": round(path_strength, 3),
+                            "hops": len(path) - 1
+                        }
+                except Exception:
+                    continue
+        
+        if not best_path:
+            return {"error": f"No path found between '{entity_a}' and '{entity_b}'"}
+        return best_path
+    
+    def get_related_entities(
+        self,
+        entity: str,
+        relationship_type: Optional[str] = None,
+        depth: int = 1
+    ) -> Dict[str, Any]:
+        """Get entities related to the given entity."""
+        G = self.get_graph()
+        matches = [n for n in G.nodes() if entity.lower() in n.lower()]
+        if not matches:
+            return {"error": f"Entity '{entity}' not found"}
+        
+        results: List[Dict[str, Any]] = []
+        for entity_name in matches:
+            if depth == 1:
+                neighbors = list(G.neighbors(entity_name))
+            else:
+                neighbors = list(
+                    nx.single_source_shortest_path_length(G, entity_name, cutoff=depth).keys()
+                )
+                if entity_name in neighbors:
+                    neighbors.remove(entity_name)
+            
+            related: List[Dict[str, Any]] = []
+            for neighbor in neighbors:
+                try:
+                    edge_data = G[entity_name].get(neighbor, {})
+                    if relationship_type and edge_data.get('type') != relationship_type:
+                        continue
+                    related.append({
+                        "entity": neighbor,
+                        "entity_type": G.nodes[neighbor].get('type'),
+                        "relationship": edge_data.get('type', 'unknown'),
+                        "strength": round(edge_data.get('decay_score', 1.0), 3)
+                    })
+                except Exception:
+                    continue
+            
+            results.append({
+                "entity": entity_name,
+                "entity_type": G.nodes[entity_name].get('type'),
+                "related_count": len(related),
+                "related_entities": sorted(related, key=lambda x: x['strength'], reverse=True)
+            })
+        
+        return {"results": results}
+    
+    def get_entity_neighborhood(
+        self,
+        entity: str,
+        radius: int = 2
+    ) -> Dict[str, Any]:
+        """Get the subgraph around an entity."""
+        G = self.get_graph()
+        matches = [n for n in G.nodes() if entity.lower() in n.lower()]
+        if not matches:
+            return {"error": f"Entity '{entity}' not found"}
+        
+        try:
+            subgraph = nx.ego_graph(G, matches[0], radius=radius)
+        except Exception as e:
+            return {"error": f"Failed to build neighborhood: {e}"}
+        
+        return {
+            "center_entity": matches[0],
+            "radius": radius,
+            "node_count": subgraph.number_of_nodes(),
+            "edge_count": subgraph.number_of_edges(),
+            "nodes": [
+                {
+                    "name": n,
+                    "type": subgraph.nodes[n].get('type'),
+                    "decay_score": round(subgraph.nodes[n].get('decay_score', 1.0), 3)
+                }
+                for n in subgraph.nodes()
+            ],
+            "edges": [
+                {
+                    "from": u,
+                    "to": v,
+                    "type": subgraph[u][v].get('type'),
+                    "decay_score": round(subgraph[u][v].get('decay_score', 1.0), 3)
+                }
+                for u, v in subgraph.edges()
+            ]
+        }
+    
+    def get_graph_stats(self) -> Dict[str, Any]:
+        """Get statistics about the knowledge graph."""
+        G = self.get_graph()
+        return {
+            "node_count": G.number_of_nodes(),
+            "edge_count": G.number_of_edges(),
+            "is_connected": nx.is_weakly_connected(G) if G.number_of_nodes() > 0 else False,
+            "density": round(nx.density(G), 4) if G.number_of_nodes() > 0 else 0,
+            "node_types": dict(Counter(
+                G.nodes[n].get('type', 'unknown') for n in G.nodes()
+            )),
+            "relationship_types": dict(Counter(
+                G[u][v].get('type', 'unknown') for u, v in G.edges()
+            ))
+        }
+
 class MemorySystem:
     def __init__(self):
         # 1. Initialize DB via Wrapper
         self.client = qdrant_client_wrapper.get_qdrant_client()
         qdrant_client_wrapper.init_db(self.client)
+        
+        # 2. Initialize Knowledge Graph Builder
+        self.graph_builder = KnowledgeGraphBuilder(self.client)
+        
         logger.info("Memory System Initialized (Modular V2.1)")
 
     # --- HELPER: Sparse Vectors ---
@@ -275,7 +539,56 @@ class MemorySystem:
             point = PointStruct(id=pid, vector=dense_vec, payload=payload)
             
         self.client.upsert(COLLECTION, points=[point])
+        
+        # Extract and store knowledge graph data
+        self._extract_and_store_graph(content, proj, pid)
+        
         return "Memory saved."
+    
+    def _extract_and_store_graph(self, content: str, proj: str, source_memory_id: str) -> None:
+        """Extract entities/relationships and store as knowledge graph memory."""
+        graph_data = extract_knowledge_graph_data(content)
+        if not graph_data:
+            return
+        
+        import uuid
+        dense_vec = embedding_helper.embed(content)
+        if not dense_vec:
+            return
+        
+        pid = str(uuid.uuid4())
+        payload = {
+            "content": json.dumps(graph_data),
+            "type": "knowledge_graph",
+            "project_name": proj,
+            "source_memory_id": source_memory_id,
+            "timestamp": time.time(),
+            "entity_count": len(graph_data.get('entities', [])),
+            "relationship_count": len(graph_data.get('relationships', []))
+        }
+        
+        if ENABLE_HYBRID_SEARCH:
+            sparse_vec = self._generate_sparse_vector(content)
+            point = PointStruct(
+                id=pid,
+                vector={
+                    "dense": dense_vec,
+                    SPARSE_VECTOR_NAME: SparseVector(
+                        indices=list(sparse_vec.keys()),
+                        values=list(sparse_vec.values())
+                    )
+                },
+                payload=payload
+            )
+        else:
+            point = PointStruct(id=pid, vector=dense_vec, payload=payload)
+        
+        self.client.upsert(COLLECTION, points=[point])
+        
+        if GRAPH_AUTO_INVALIDATE:
+            self.graph_builder.invalidate_cache()
+        
+        logger.info(f"Stored graph: {len(graph_data.get('entities', []))} entities, {len(graph_data.get('relationships', []))} relationships")
 
     # --- API Wrapper ---
     def proactive_retrieval(self, user_id: str, user_message: str, project_name: str) -> Optional[str]:
@@ -993,3 +1306,28 @@ class MemorySystem:
             ai = t.get('turn', {}).get('ai', '(Pending)')
             formatted.append(format_condensed_turn(user, ai, ts))
         return "\n\n".join(formatted)
+
+    # =========================================================================
+    # KNOWLEDGE GRAPH (Restored from v1.0)
+    # =========================================================================
+    
+    def graph_find_connection(self, entity_a: str, entity_b: str, max_hops: int = 3) -> Dict[str, Any]:
+        """Find shortest path between two entities in the knowledge graph."""
+        return self.graph_builder.find_connection(entity_a, entity_b, max_hops)
+    
+    def graph_get_related(self, entity: str, relationship_type: Optional[str] = None, depth: int = 1) -> Dict[str, Any]:
+        """Get entities related to a given entity."""
+        return self.graph_builder.get_related_entities(entity, relationship_type, depth)
+    
+    def graph_get_neighborhood(self, entity: str, radius: int = 2) -> Dict[str, Any]:
+        """Get the subgraph around an entity."""
+        return self.graph_builder.get_entity_neighborhood(entity, radius)
+    
+    def graph_get_stats(self) -> Dict[str, Any]:
+        """Get statistics about the knowledge graph."""
+        return self.graph_builder.get_graph_stats()
+    
+    def graph_invalidate(self) -> str:
+        """Force rebuild of the knowledge graph on next access."""
+        self.graph_builder.invalidate_cache()
+        return "✅ Knowledge graph cache invalidated"

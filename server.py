@@ -569,3 +569,52 @@ async def get_handover_simple(project: str, format: str = "condensed", max_turns
         max_turns
     )
     return {"handover": result}
+
+
+# =============================================================================
+# KNOWLEDGE GRAPH ENDPOINTS (Restored from v1.0)
+# =============================================================================
+
+@app.get("/graph/stats")
+async def graph_stats():
+    """Get knowledge graph statistics."""
+    result = await asyncio.to_thread(state.memory.graph_get_stats)
+    return result
+
+@app.get("/graph/connection")
+async def graph_find_connection(entity_a: str, entity_b: str, max_hops: int = 3):
+    """Find shortest path between two entities."""
+    result = await asyncio.to_thread(
+        state.memory.graph_find_connection,
+        entity_a,
+        entity_b,
+        max_hops
+    )
+    return result
+
+@app.get("/graph/related/{entity}")
+async def graph_get_related(entity: str, relationship_type: Optional[str] = None, depth: int = 1):
+    """Get entities related to a given entity."""
+    result = await asyncio.to_thread(
+        state.memory.graph_get_related,
+        entity,
+        relationship_type,
+        depth
+    )
+    return result
+
+@app.get("/graph/neighborhood/{entity}")
+async def graph_get_neighborhood(entity: str, radius: int = 2):
+    """Get the subgraph around an entity."""
+    result = await asyncio.to_thread(
+        state.memory.graph_get_neighborhood,
+        entity,
+        radius
+    )
+    return result
+
+@app.post("/graph/invalidate")
+async def graph_invalidate():
+    """Force rebuild of the knowledge graph cache."""
+    result = await asyncio.to_thread(state.memory.graph_invalidate)
+    return {"result": result}
