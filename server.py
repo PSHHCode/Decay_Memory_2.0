@@ -103,8 +103,12 @@ state = SystemState()
 # --- HEARTBEAT ENGINE V2.0 ---
 from heartbeat_service import HeartbeatEngine, HeartbeatConfig
 
-# Heartbeat will be initialized in lifespan after memory/soul are ready
+# --- CURIOSITY ENGINE (Phase 3) ---
+from curiosity_engine import CuriosityEngine, CuriosityConfig, seed_initial_curiosities
+
+# Engines will be initialized in lifespan after memory/soul are ready
 heartbeat_engine: Optional[HeartbeatEngine] = None
+curiosity_engine: Optional[CuriosityEngine] = None
 
 async def heartbeat_loop():
     """
@@ -144,7 +148,7 @@ async def heartbeat_loop():
 # --- LIFECYCLE MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global heartbeat_engine
+    global heartbeat_engine, curiosity_engine
     
     # Startup
     logger.info("Booting Memory System (Qdrant)...")
@@ -164,6 +168,16 @@ async def lifespan(app: FastAPI):
         config=HeartbeatConfig.from_env()
     )
     
+    # Initialize Curiosity Engine (Phase 3)
+    logger.info("Starting Curiosity Engine V1.0...")
+    curiosity_engine = CuriosityEngine(
+        memory_system=state.memory,
+        soul=state.soul,
+        config=CuriosityConfig.from_env()
+    )
+    seed_initial_curiosities(curiosity_engine.queue)
+    curiosity_engine.start()
+    
     # Start Heartbeat Background Task
     asyncio.create_task(heartbeat_loop())
     
@@ -171,6 +185,8 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
+    if curiosity_engine:
+        curiosity_engine.stop()
     if heartbeat_engine:
         heartbeat_engine.stop()
     logger.info("System Shutting Down.")
@@ -322,6 +338,15 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
     )
     state.soul.register_interaction("positive")
     background_tasks.add_task(run_librarian, user_input, ai_text, state.current_project)
+    
+    # Phase 3: Extract curiosities and update activity
+    if curiosity_engine:
+        curiosity_engine.update_user_activity()
+        background_tasks.add_task(
+            curiosity_engine.add_curiosity_from_conversation,
+            user_input,
+            ai_text
+        )
 
     return ChatResponse(
         response=ai_text, 
@@ -982,3 +1007,92 @@ async def get_notifications():
     """Get queued notifications (from heartbeat and other sources)."""
     notifications = await state.get_notifications()
     return {"notifications": notifications}
+
+
+# =============================================================================
+# CURIOSITY ENGINE ENDPOINTS (Phase 3 - Autonomous Thought)
+# =============================================================================
+
+@app.get("/curiosity/status")
+async def curiosity_status():
+    """Get curiosity engine status."""
+    if curiosity_engine is None:
+        raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    return curiosity_engine.get_status()
+
+@app.get("/curiosity/queue")
+async def curiosity_queue():
+    """Get the current curiosity queue."""
+    if curiosity_engine is None:
+        raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    
+    items = []
+    for item in curiosity_engine.queue.items:
+        items.append({
+            "topic": item.topic,
+            "source": item.source,
+            "reason": item.reason,
+            "priority": item.priority,
+            "explored": item.explored,
+            "created_at": item.created_at
+        })
+    
+    return {"items": items}
+
+class CuriosityAddRequest(BaseModel):
+    topic: str
+    reason: str = "Manual addition"
+    priority: float = 0.7
+
+@app.post("/curiosity/add")
+async def curiosity_add(request: CuriosityAddRequest):
+    """Manually add a topic to the curiosity queue."""
+    if curiosity_engine is None:
+        raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    
+    curiosity_engine.queue.add(
+        topic=request.topic,
+        source="manual",
+        reason=request.reason,
+        priority=request.priority
+    )
+    return {"result": f"✅ Added '{request.topic}' to curiosity queue"}
+
+@app.post("/curiosity/explore")
+async def curiosity_explore_now():
+    """Manually trigger an exploration cycle."""
+    if curiosity_engine is None:
+        raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    
+    result = await curiosity_engine.explore_cycle()
+    if result is None:
+        return {"result": "No exploration performed", "reason": "Check status for why"}
+    return {"result": "✅ Exploration complete", "exploration": result}
+
+@app.get("/curiosity/discoveries")
+async def curiosity_discoveries():
+    """Get recent discoveries/explorations."""
+    if curiosity_engine is None:
+        raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    
+    discoveries = []
+    for item in curiosity_engine.queue.get_recent_explorations(10):
+        if item.exploration_result:
+            discoveries.append({
+                "topic": item.topic,
+                "summary": item.exploration_result.get("summary", ""),
+                "surprising_insight": item.exploration_result.get("surprising_insight", ""),
+                "opinion": item.exploration_result.get("opinion", {}),
+                "explored_at": item.exploration_result.get("explored_at")
+            })
+    
+    return {"discoveries": discoveries}
+
+@app.get("/curiosity/shareable")
+async def curiosity_shareable():
+    """Get a discovery worth sharing with the user (for Heartbeat)."""
+    if curiosity_engine is None:
+        raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
+    
+    discovery = curiosity_engine.get_shareable_discovery()
+    return {"discovery": discovery}
