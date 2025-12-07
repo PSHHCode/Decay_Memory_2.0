@@ -329,6 +329,95 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         intimacy=state.soul.state.intimacy
     )
 
+
+# =============================================================================
+# STREAMING CHAT ENDPOINT (Phase 2 - Latency Masking)
+# =============================================================================
+
+from fastapi.responses import StreamingResponse
+
+@app.post("/chat/stream")
+async def chat_stream_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
+    """
+    Streaming chat endpoint for reduced perceived latency.
+    
+    Returns Server-Sent Events (SSE) with:
+    - {"type": "thinking"} - AI is processing
+    - {"type": "chunk", "content": "..."} - Partial response
+    - {"type": "done", "mood": "...", "intimacy": 0.x} - Complete
+    """
+    if request.project != state.current_project:
+        state.current_project = request.project
+        hist = load_chat_history_for_gemini(state.current_project)
+        state.chat_session = model.start_chat(history=hist)
+        logger.info(f"Switched to project: {state.current_project}")
+
+    user_input = request.message
+
+    # Save Input FIRST
+    await log_turn_async(
+        state.user_id,
+        state.current_project, 
+        user_input, 
+        "(AI Response Pending)"
+    )
+    await asyncio.to_thread(
+        state.memory.update_session, 
+        state.user_id, 
+        user_input, 
+        state.current_project
+    )
+
+    async def generate_stream():
+        """Generator for SSE stream."""
+        full_response = ""
+        
+        # Send thinking indicator
+        yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
+        
+        # Enrich context
+        full_prompt = await enrich_context(user_input)
+        
+        try:
+            # Use streaming generation
+            response = await state.chat_session.send_message_async(
+                full_prompt,
+                stream=True
+            )
+            
+            async for chunk in response:
+                if chunk.text:
+                    full_response += chunk.text
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk.text})}\n\n"
+            
+            # Save complete response
+            await update_last_turn_response_async(
+                state.user_id,
+                state.current_project, 
+                full_response
+            )
+            state.soul.register_interaction("positive")
+            
+            # Run librarian in background
+            background_tasks.add_task(run_librarian, user_input, full_response, state.current_project)
+            
+            # Send done signal with metadata
+            yield f"data: {json.dumps({'type': 'done', 'mood': state.soul.state.mood, 'intimacy': state.soul.state.intimacy})}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Streaming generation failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
 @app.get("/notifications")
 async def get_notifications():
     """Frontend polls this to see if Her has something to say."""
