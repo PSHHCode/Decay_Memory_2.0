@@ -518,7 +518,14 @@ class CuriosityEngine:
     
     async def _store_exploration_memory(self, topic: str, result: Dict[str, Any]):
         """Store exploration as a memory."""
-        content = f"I explored '{topic}' and learned: {result.get('summary', '')}. {result.get('opinion', {}).get('opinion', '')}"
+        opinion_data = result.get('opinion', {})
+        opinion_text = ""
+        if isinstance(opinion_data, dict):
+            opinion_text = opinion_data.get('opinion', '')
+        elif isinstance(opinion_data, str):
+            opinion_text = opinion_data
+        
+        content = f"I explored '{topic}' and learned: {result.get('summary', '')}. {opinion_text}"
         
         # Get emotional context
         emotions = self.soul.get_emotion_for_memory()
