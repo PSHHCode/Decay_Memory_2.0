@@ -437,15 +437,17 @@ class MemorySystem:
             )
         
         try:
-            hits = self.client.search(
-                COLLECTION, 
-                query_vector=NamedVector(name="dense", vector=vec),
-                query_filter=combined_filter, 
-                limit=5, 
+            # Use query_points with dense vector (same approach as hybrid_search)
+            search_result = self.client.query_points(
+                COLLECTION,
+                query=vec,
+                using="dense",
+                query_filter=combined_filter,
+                limit=5,
                 with_payload=True
             )
             
-            for h in hits:
+            for h in search_result.points:
                 if h.score >= CONFLICT_SIMILARITY_THRESHOLD:
                     logger.info(f"Potential conflict found: {h.payload.get('content', '')[:50]}... (score: {h.score:.2f})")
                     return h.payload | {'id': h.id, 'similarity': h.score}
