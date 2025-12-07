@@ -66,6 +66,42 @@ GRAPH_CACHE_SECONDS = 300  # Rebuild graph every 5 minutes
 GRAPH_AUTO_INVALIDATE = True  # Auto-invalidate on memory changes
 MAX_SCROLL_LIMIT = 10000  # Max memories to scan for graph building
 
+# Proactive Retrieval Constants (from v1.0)
+EXPLICIT_MEMORY_KEYWORDS = [
+    "remember", "recall", "last time", "yesterday", "before", 
+    "earlier", "we discussed", "you said", "you mentioned"
+]
+PROJECT_CONTINUITY_KEYWORDS = [
+    "the project", "that issue", "this feature", "it", "that",
+    "the system", "the code", "the script", "the implementation"
+]
+GREETING_KEYWORDS = [
+    "good morning", "good afternoon", "good evening",
+    "hi", "hello", "hey there"
+]
+QUESTION_STARTERS = [
+    "what", "when", "where", "how", "why", "who", "which", "can", "should", "is", "are"
+]
+MAX_ENTITIES_TO_SEARCH = 3
+MAX_MEMORY_CONTENT_PREVIEW = 200
+
+# Memory half-lives by type (seconds)
+HALF_LIVES = {
+    'personal': 2592000,      # 30 days
+    'preference': 1296000,    # 15 days  
+    'goal': 604800,           # 7 days
+    'project': 432000,        # 5 days
+    'topic': 259200,          # 3 days
+    'dialog': 86400,          # 1 day
+    'context_handover': 259200  # 3 days
+}
+
+# Type weights for injection scoring
+TYPE_WEIGHTS = {
+    'project': 1.5, 'goal': 1.3, 'personal': 1.2, 'topic': 1.0,
+    'preference': 0.9, 'dialog': 0.8, 'context_handover': 1.4
+}
+
 logger = logging.getLogger("DecayMemory")
 
 # =============================================================================
@@ -402,6 +438,184 @@ class KnowledgeGraphBuilder:
             ))
         }
 
+
+# =============================================================================
+# PROACTIVE RETRIEVAL FUNCTIONS (Restored from v1.0)
+# =============================================================================
+
+def detect_proactive_triggers(
+    user_message: str,
+    project_name: str,
+    time_since_last: float
+) -> List[Dict[str, Any]]:
+    """Detect if proactive retrieval should fire based on message patterns."""
+    triggers: List[Dict[str, Any]] = []
+    message_lower = user_message.lower()
+    
+    # Check for explicit memory references
+    if any(kw in message_lower for kw in EXPLICIT_MEMORY_KEYWORDS):
+        triggers.append({
+            "type": "explicit_memory",
+            "confidence": 0.90,
+            "query": user_message,
+            "reason": "User explicitly referenced past memory"
+        })
+    
+    # Entity detection (capitalized words)
+    words = user_message.split()
+    entities = [w for w in words if len(w) > 2 and w[0].isupper() and w not in ["I", "The", "A", "An"]]
+    
+    if entities:
+        for entity in entities[:MAX_ENTITIES_TO_SEARCH]:
+            triggers.append({
+                "type": "entity_mention",
+                "confidence": 0.75,
+                "query": entity,
+                "graph_expand": True,
+                "reason": f"Entity mentioned: {entity}"
+            })
+    
+    # Project continuity detection
+    has_project_ref = any(ref in message_lower for ref in PROJECT_CONTINUITY_KEYWORDS)
+    if has_project_ref and project_name:
+        triggers.append({
+            "type": "project_continuity",
+            "confidence": 0.70,
+            "query": f"recent work {project_name}",
+            "project_name": project_name,
+            "reason": "Reference to ongoing project work"
+        })
+    
+    # Greeting after time gap
+    min_time_gap_hours = PROACTIVE_CONFIG.get("min_time_gap_hours", 4)
+    is_greeting = any(g in message_lower for g in GREETING_KEYWORDS)
+    long_gap = time_since_last > (min_time_gap_hours * 3600)
+    
+    if is_greeting and long_gap:
+        triggers.append({
+            "type": "time_based_greeting",
+            "confidence": 0.65,
+            "query": f"last session {project_name}" if project_name else "last session",
+            "project_name": project_name,
+            "reason": f"Greeting after {time_since_last/3600:.1f}h gap"
+        })
+    
+    # Question pattern
+    is_question = any(message_lower.startswith(q) for q in QUESTION_STARTERS) or "?" in user_message
+    
+    if is_question and project_name:
+        triggers.append({
+            "type": "question_pattern",
+            "confidence": 0.65,
+            "query": user_message,
+            "project_name": project_name,
+            "needs_llm": True,
+            "reason": "Question that might reference context"
+        })
+    
+    if triggers:
+        logger.debug(f"Proactive triggers detected: {[t['type'] for t in triggers]}")
+    
+    return triggers
+
+
+def generate_llm_query(user_message: str, project_name: str) -> str:
+    """Use Gemini to generate a better search query."""
+    import os
+    try:
+        import google.generativeai as genai
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return user_message
+        genai.configure(api_key=api_key)
+    except ImportError:
+        return user_message
+    
+    prompt = f"""Given this user message: "{user_message}"
+Current project: {project_name or "None"}
+
+Generate a concise search query (2-6 words) to find the most relevant memories.
+Focus on what the user is actually asking about or referencing.
+
+Return ONLY the search query, nothing else."""
+
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        result = model.generate_content(prompt)
+        query = result.text.strip().strip('"').strip("'")
+        return query
+    except Exception as e:
+        logger.warning(f"LLM Query Gen failed: {e}")
+        return user_message
+
+
+def calculate_injection_score(
+    memory: Dict[str, Any],
+    user_message: str,
+    trigger_confidence: float
+) -> float:
+    """Calculate whether a retrieved memory should be injected into context."""
+    semantic_score = memory.get('search_score', memory.get('score', 0.5))
+    
+    # Calculate decay score
+    age_seconds = time.time() - memory.get('timestamp', 0)
+    half_life = HALF_LIVES.get(memory.get('type'), 604800)
+    decay_score = max(0.5 ** (age_seconds / half_life), DECAY_FLOOR)
+    
+    # Recency boost (recent memories get a bump)
+    age_hours = age_seconds / 3600
+    recency_boost = 1.5 if age_hours < 24 else (1.2 if age_hours < 72 else 1.0)
+    
+    # Type-specific weight
+    type_weight = TYPE_WEIGHTS.get(memory.get('type'), 1.0)
+    
+    # User-applied boost factor
+    boost = memory.get('boost_factor', 1.0)
+    
+    # Final injection score
+    injection_score = (
+        semantic_score * decay_score * recency_boost * 
+        type_weight * boost * trigger_confidence
+    )
+    
+    return injection_score
+
+
+def format_proactive_context(memories: List[Dict[str, Any]]) -> str:
+    """Format retrieved memories for injection into AI context."""
+    if not memories:
+        return ""
+    
+    context = "## 🧠 PROACTIVE CONTEXT\n\n"
+    context += "*(Retrieved automatically based on conversation analysis)*\n\n"
+    
+    max_injections = PROACTIVE_CONFIG.get("max_injections", 3)
+    for i, mem in enumerate(memories[:max_injections], 1):
+        age_hours = (time.time() - mem.get('timestamp', 0)) / 3600
+        if age_hours < 1:
+            age = "just now"
+        elif age_hours < 24:
+            age = f"{age_hours:.0f}h ago"
+        elif age_hours < 168:
+            age = f"{age_hours/24:.0f}d ago"
+        else:
+            age = f"{age_hours/168:.0f}w ago"
+        
+        content = mem.get('content', '')[:MAX_MEMORY_CONTENT_PREVIEW]
+        if len(mem.get('content', '')) > MAX_MEMORY_CONTENT_PREVIEW:
+            content += "..."
+        
+        mem_type = mem.get('type', 'unknown')
+        score = mem.get('injection_score', 0.0)
+        
+        context += f"{i}. **[{age}]** {content}\n"
+        context += f"   *Type: {mem_type} | Relevance: {score:.2f}*\n\n"
+    
+    context += "---\n"
+    context += "*Use this context naturally if relevant. Don't mention retrieval unless asked.*\n\n"
+    
+    return context
+
 class MemorySystem:
     def __init__(self):
         # 1. Initialize DB via Wrapper
@@ -591,31 +805,119 @@ class MemorySystem:
         logger.info(f"Stored graph: {len(graph_data.get('entities', []))} entities, {len(graph_data.get('relationships', []))} relationships")
 
     # --- API Wrapper ---
-    def proactive_retrieval(self, user_id: str, user_message: str, project_name: str) -> Optional[str]:
+    def proactive_retrieval(
+        self, 
+        user_id: str, 
+        user_message: str, 
+        project_name: str,
+        time_since_last: float = 0
+    ) -> Optional[str]:
         """
-        Public API for the Orchestrator.
-        Parses the message -> Searches DB -> Formats Context.
+        Full proactive retrieval with trigger detection and injection scoring.
+        
+        1. Detect triggers (explicit memory refs, entities, project refs, etc.)
+        2. Execute searches for each trigger
+        3. Score results for injection worthiness
+        4. Format and return context for AI
         """
-        # Logic: 
-        # 1. Trigger Detection (Simplified for now: Search everything)
-        # 2. Hybrid Search
-        # 3. Format
+        if not PROACTIVE_CONFIG.get("enabled", True):
+            return None
         
-        results = self.hybrid_search(user_message, proj=project_name)
+        # Step 1: Detect triggers
+        triggers = detect_proactive_triggers(user_message, project_name, time_since_last)
         
-        # Filter by threshold
+        if not triggers:
+            # Fast path: just do semantic search if no triggers
+            results = self.hybrid_search(user_message, proj=project_name)
+            valid = [m for m in results if m['search_score'] >= PROACTIVE_CONFIG['fast_path_threshold']]
+            if valid:
+                for m in valid:
+                    m['injection_score'] = calculate_injection_score(m, user_message, 0.5)
+                valid = [m for m in valid if m['injection_score'] >= PROACTIVE_CONFIG['injection_threshold']]
+                if valid:
+                    return format_proactive_context(valid)
+            return None
+        
+        # Step 2: Execute searches for each trigger
+        all_memories: Dict[str, Dict[str, Any]] = {}  # Dedupe by content
+        
+        for trigger in triggers:
+            query = trigger.get('query', user_message)
+            
+            # Optional LLM query refinement
+            if trigger.get('needs_llm'):
+                query = generate_llm_query(query, project_name)
+            
+            # Execute search
+            results = self.hybrid_search(query, proj=project_name)
+            
+            # Expand with graph if requested
+            if trigger.get('graph_expand') and results:
+                results = self._expand_with_graph(results, project_name)
+            
+            # Step 3: Score each result
+            for mem in results:
+                content = mem.get('content', '')
+                if content not in all_memories:
+                    injection_score = calculate_injection_score(
+                        mem, user_message, trigger['confidence']
+                    )
+                    mem['injection_score'] = injection_score
+                    mem['trigger_type'] = trigger['type']
+                    all_memories[content] = mem
+                else:
+                    # Update score if higher
+                    new_score = calculate_injection_score(
+                        mem, user_message, trigger['confidence']
+                    )
+                    if new_score > all_memories[content].get('injection_score', 0):
+                        mem['injection_score'] = new_score
+                        mem['trigger_type'] = trigger['type']
+                        all_memories[content] = mem
+        
+        # Step 4: Filter by threshold and sort
+        threshold = PROACTIVE_CONFIG.get('injection_threshold', 0.15)
         valid_memories = [
-            m for m in results 
-            if m['search_score'] >= PROACTIVE_CONFIG['injection_threshold']
+            m for m in all_memories.values()
+            if m.get('injection_score', 0) >= threshold
         ]
         
-        if not valid_memories: return None
+        if not valid_memories:
+            return None
         
-        context_str = ""
-        for i, mem in enumerate(valid_memories, 1):
-            context_str += f"{i}. {mem.get('content')} (Relevance: {mem['search_score']:.2f})\n"
+        # Sort by injection score
+        valid_memories.sort(key=lambda x: x.get('injection_score', 0), reverse=True)
+        
+        # Step 5: Format
+        return format_proactive_context(valid_memories)
+    
+    def _expand_with_graph(
+        self,
+        results: List[Dict[str, Any]],
+        proj: str
+    ) -> List[Dict[str, Any]]:
+        """Expand search results using knowledge graph connections."""
+        expanded = list(results)
+        
+        # Extract entities from results
+        for mem in results[:3]:  # Check top 3
+            content = mem.get('content', '')
+            words = content.split()
+            entities = [w for w in words if len(w) > 2 and w[0].isupper() and w not in ["I", "The", "A", "An"]]
             
-        return context_str
+            for entity in entities[:2]:
+                related = self.graph_builder.get_related_entities(entity, depth=1)
+                if 'results' in related:
+                    for r in related['results']:
+                        for rel_entity in r.get('related_entities', [])[:2]:
+                            # Search for memories about related entities
+                            entity_results = self.hybrid_search(rel_entity['entity'], proj=proj)
+                            for er in entity_results[:1]:
+                                if er.get('content') not in [e.get('content') for e in expanded]:
+                                    er['graph_expanded'] = True
+                                    expanded.append(er)
+        
+        return expanded
 
     # --- Session Updates (Bridge to Flight Recorder) ---
     def update_session(self, user_id: str, msg: str, proj: str):

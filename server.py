@@ -618,3 +618,42 @@ async def graph_invalidate():
     """Force rebuild of the knowledge graph cache."""
     result = await asyncio.to_thread(state.memory.graph_invalidate)
     return {"result": result}
+
+
+# =============================================================================
+# PROACTIVE RETRIEVAL ENDPOINTS (Restored from v1.0)
+# =============================================================================
+
+class ProactiveRetrievalRequest(BaseModel):
+    message: str
+    project: str = "global"
+    time_since_last: float = 0  # seconds since last interaction
+
+@app.post("/proactive/analyze")
+async def analyze_triggers(request: ProactiveRetrievalRequest):
+    """
+    Analyze a message for proactive retrieval triggers.
+    Returns detected triggers without executing searches.
+    """
+    from memory_service import detect_proactive_triggers
+    triggers = detect_proactive_triggers(
+        request.message,
+        request.project,
+        request.time_since_last
+    )
+    return {"triggers": triggers}
+
+@app.post("/proactive/retrieve")
+async def proactive_retrieve(request: ProactiveRetrievalRequest):
+    """
+    Execute full proactive retrieval.
+    Returns formatted context string for AI injection.
+    """
+    result = await asyncio.to_thread(
+        state.memory.proactive_retrieval,
+        state.user_id,
+        request.message,
+        request.project,
+        request.time_since_last
+    )
+    return {"context": result}
