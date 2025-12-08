@@ -44,28 +44,30 @@ body, html, #root {
   gap: 0.5rem;
 }
 
-.view-btn {
+button.view-btn {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.5rem 1rem;
-  background: transparent;
-  border: 1px solid #30363d;
+  background: transparent !important;
+  border: 1px solid #30363d !important;
   border-radius: 6px;
   color: #8b949e;
   cursor: pointer;
   transition: all 0.2s ease;
   font-size: 0.9rem;
+  position: relative;
+  z-index: 10;
 }
 
-.view-btn:hover {
-  background: #21262d;
+button.view-btn:hover {
+  background: #21262d !important;
   color: #c9d1d9;
 }
 
-.view-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
+button.view-btn.active {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
   color: #0d1117;
 }
 
@@ -214,3 +216,43 @@ button {
   cursor: pointer;
 }
 button:disabled { opacity: 0.5; }
+
+/* Microphone Button */
+.mic-btn {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mic-btn:hover:not(:disabled) {
+  background: #30363d;
+  color: var(--accent);
+}
+
+.mic-btn.recording {
+  background: rgba(248, 81, 73, 0.2);
+  border-color: #f85149;
+  color: #f85149;
+  animation: pulse-record 1s infinite;
+}
+
+@keyframes pulse-record {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

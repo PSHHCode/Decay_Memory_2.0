@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Bot, User, Terminal, Cpu, Settings, MessageSquare, Volume2, VolumeX } from 'lucide-react';
+import { Send, Bot, User, Terminal, Cpu, Settings, MessageSquare, Volume2, VolumeX, Mic, MicOff, Loader } from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
 import Dashboard from './Dashboard';
 import './App.css';
@@ -36,10 +36,90 @@ function App() {
   const [status, setStatus] = useState('Connecting...');
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   
   // Toggle voice on/off
   const toggleVoice = () => setVoiceEnabled(!voiceEnabled);
+  
+  // Start recording voice input
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = async () => {
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Create audio blob and transcribe
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await transcribeAndSend(audioBlob);
+      };
+      
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      alert('Could not access microphone. Please allow microphone permissions.');
+    }
+  };
+  
+  // Stop recording
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+  
+  // Transcribe audio and send as message
+  const transcribeAndSend = async (audioBlob: Blob) => {
+    setIsTranscribing(true);
+    
+    try {
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+      
+      const headers: HeadersInit = {};
+      if (API_KEY) headers['X-API-Key'] = API_KEY;
+      
+      const response = await fetch(`${API_BASE}/voice/transcribe`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.text && data.text.trim()) {
+          // Set input and send
+          setInput(data.text);
+          // Small delay to let state update, then send
+          setTimeout(() => {
+            sendMessageWithText(data.text);
+          }, 100);
+        }
+      } else {
+        console.error('Transcription failed:', response.status);
+      }
+    } catch (error) {
+      console.error('Transcription error:', error);
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => {
@@ -150,10 +230,37 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const sendMessage = async () => {
-    if (!input.trim()) return;
-
-    const userMsg: Message = { role: 'user', content: input };
+  // Helper to speak text
+  const speakText = async (text: string) => {
+    try {
+      const response = await authFetch(`${API_BASE}/voice/speak`, {
+        method: 'POST',
+        body: JSON.stringify({ message: text }),
+      });
+      
+      if (response.ok) {
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        audioRef.current = audio;
+        
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          audioRef.current = null;
+        };
+        
+        audio.play();
+      }
+    } catch (error) {
+      console.error('Auto-speak failed:', error);
+    }
+  };
+  
+  // Send message with optional text override (for voice input)
+  const sendMessageWithText = async (text: string) => {
+    if (!text.trim()) return;
+    
+    const userMsg: Message = { role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
@@ -161,7 +268,7 @@ function App() {
     try {
       const response = await authFetch(`${API_BASE}/chat`, {
         method: 'POST',
-        body: JSON.stringify({ message: userMsg.content, project: project }),
+        body: JSON.stringify({ message: text, project: project }),
       });
 
       if (!response.ok) {
@@ -177,6 +284,11 @@ function App() {
         intimacy: data.intimacy 
       };
       setMessages(prev => [...prev, aiMsg]);
+      
+      // Auto-speak if voice is enabled
+      if (voiceEnabled && data.response) {
+        speakText(data.response);
+      }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : 'Unknown error';
       setMessages(prev => [...prev, { 
@@ -188,6 +300,11 @@ function App() {
     }
   };
 
+  const sendMessage = async () => {
+    if (!input.trim()) return;
+    await sendMessageWithText(input);
+  };
+
   return (
     <div className="app-container">
       <header className="header">
@@ -197,14 +314,16 @@ function App() {
         </div>
         <div className="header-center">
           <button 
+            type="button"
             className={`view-btn ${view === 'chat' ? 'active' : ''}`}
-            onClick={() => setView('chat')}
+            onClick={() => { console.log('Chat clicked'); setView('chat'); }}
           >
             <MessageSquare size={16} /> Chat
           </button>
           <button 
+            type="button"
             className={`view-btn ${view === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setView('dashboard')}
+            onClick={() => { console.log('Settings clicked'); setView('dashboard'); }}
           >
             <Settings size={16} /> Settings
           </button>
@@ -267,15 +386,24 @@ function App() {
 
           <footer className="input-area">
             <div className="input-wrapper">
+              <button 
+                className={`mic-btn ${isRecording ? 'recording' : ''}`}
+                onClick={isRecording ? stopRecording : startRecording}
+                disabled={isLoading || isTranscribing}
+                title={isRecording ? 'Stop recording' : 'Start voice input'}
+              >
+                {isTranscribing ? <Loader size={18} className="spinning" /> : 
+                 isRecording ? <MicOff size={18} /> : <Mic size={18} />}
+              </button>
               <input
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                placeholder="Type a message..."
-                disabled={isLoading}
+                placeholder={isRecording ? "Listening..." : isTranscribing ? "Transcribing..." : "Type or click 🎤 to speak..."}
+                disabled={isLoading || isRecording || isTranscribing}
               />
-              <button onClick={sendMessage} disabled={isLoading}>
+              <button onClick={sendMessage} disabled={isLoading || isRecording || isTranscribing}>
                 <Send size={18} />
               </button>
             </div>
