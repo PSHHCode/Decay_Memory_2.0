@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir --prefer-binary \
     python-dotenv \
     google-generativeai \
     openai \
+    anthropic \
     qdrant-client \
     networkx \
     colorama \

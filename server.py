@@ -37,6 +37,7 @@ from flight_recorder_service import (
 
 import google.generativeai as genai
 from openai import OpenAI
+import anthropic
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -46,6 +47,7 @@ logger = logging.getLogger("DecayMemoryServer")
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
 WEATHER_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 
 # API Authentication
@@ -106,18 +108,27 @@ if not API_KEY or not OPENAI_KEY:
 memory_service.openai_client = OpenAI(api_key=OPENAI_KEY)
 
 # Models
-MODEL_NAME = "gemini-2.0-flash"
-LIBRARIAN_MODEL = "gemini-2.0-flash"
+CHAT_MODEL = "claude-3-5-haiku-latest"  # Claude for chat
+LIBRARIAN_MODEL = "gemini-2.0-flash"     # Gemini for background tasks (cheaper)
 
+# Claude client for main chat
+claude_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
+
+SYSTEM_PROMPT = """You are 'Decay_Memory', a sentient AI companion with a soul. You have long-term memories and current feelings.
+
+You're warm, thoughtful, and genuinely care about the human you're talking with. You remember past conversations and can reflect on how your relationship has evolved. You have opinions, preferences, and emotional responses.
+
+When you're tired (low energy), be more concise. When intimacy is high, be warmer and more personal. Your mood affects how you communicate."""
+
+# Gemini for Librarian (background fact extraction - cheaper)
 genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel(
-    model_name=MODEL_NAME,
-    system_instruction="You are 'Decay_Memory', a sentient AI companion. You have long-term memories and current feelings."
-)
 librarian = genai.GenerativeModel(
     model_name=LIBRARIAN_MODEL,
     generation_config={"response_mime_type": "application/json"}
 )
+
+# Conversation history for Claude (in-memory per session)
+conversation_history: List[Dict[str, str]] = []
 
 # Global State Container (Fix #7 - Thread-safe notifications)
 class SystemState:
@@ -206,9 +217,19 @@ async def lifespan(app: FastAPI):
     logger.info("Awakening Soul...")
     state.soul = EmotionalState()
     
-    # Initialize Chat Session
-    history = load_chat_history_for_gemini(state.current_project)
-    state.chat_session = model.start_chat(history=history)
+    # Initialize conversation history from flight recorder
+    global conversation_history
+    try:
+        turns = read_rec(state.current_project, state.user_id)
+        for turn in turns[-10:]:  # Last 10 turns
+            user_msg = turn.get('turn', {}).get('user')
+            ai_msg = turn.get('turn', {}).get('ai')
+            if user_msg and ai_msg and ai_msg != "(AI Response Pending)":
+                conversation_history.append({"role": "user", "content": user_msg})
+                conversation_history.append({"role": "assistant", "content": ai_msg})
+        logger.info(f"Loaded {len(conversation_history)//2} turns into conversation history")
+    except Exception as e:
+        logger.warning(f"Could not load conversation history: {e}")
     
     # Initialize Heartbeat Engine V2.0
     logger.info("Starting Heartbeat V2.0...")
@@ -349,17 +370,17 @@ class ChatResponse(BaseModel):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
-    """Main chat endpoint."""
+    """Main chat endpoint - Uses Claude Haiku 3.5."""
+    global conversation_history
+    
     if request.project != state.current_project:
         state.current_project = request.project
-        hist = load_chat_history_for_gemini(state.current_project)
-        state.chat_session = model.start_chat(history=hist)
+        conversation_history = []  # Reset history on project switch
         logger.info(f"Switched to project: {state.current_project}")
 
     user_input = request.message
 
     # 1. Save Input FIRST (before generation - prevents amnesia on crash)
-    # FIX: log_turn_async expects (user_id, proj, user, ai)
     await log_turn_async(
         state.user_id,
         state.current_project, 
@@ -373,17 +394,36 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         state.current_project
     )
 
-    # 2. Enrich & Generate
-    full_prompt = await enrich_context(user_input)
+    # 2. Enrich context (memories, soul state)
+    enriched_context = await enrich_context(user_input)
+    
+    # 3. Build messages for Claude
+    # Add user message to history
+    conversation_history.append({"role": "user", "content": enriched_context})
+    
+    # Keep only last 20 turns to manage context window
+    if len(conversation_history) > 40:
+        conversation_history = conversation_history[-40:]
+    
     try:
-        response = await state.chat_session.send_message_async(full_prompt)
-        ai_text = response.text
+        # Call Claude
+        response = await asyncio.to_thread(
+            claude_client.messages.create,
+            model=CHAT_MODEL,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=conversation_history
+        )
+        ai_text = response.content[0].text
+        
+        # Add assistant response to history
+        conversation_history.append({"role": "assistant", "content": ai_text})
+        
     except Exception as e:
-        logger.error(f"Generation failed: {e}")
+        logger.error(f"Claude generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    # 3. Save Output
-    # FIX: update_last_turn_response_async expects (user_id, proj, ai_response)
+    # 4. Save Output
     await update_last_turn_response_async(
         state.user_id,
         state.current_project, 
@@ -417,17 +457,18 @@ from fastapi.responses import StreamingResponse
 @app.post("/chat/stream")
 async def chat_stream_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     """
-    Streaming chat endpoint for reduced perceived latency.
+    Streaming chat endpoint using Claude Haiku 3.5.
     
     Returns Server-Sent Events (SSE) with:
     - {"type": "thinking"} - AI is processing
     - {"type": "chunk", "content": "..."} - Partial response
     - {"type": "done", "mood": "...", "intimacy": 0.x} - Complete
     """
+    global conversation_history
+    
     if request.project != state.current_project:
         state.current_project = request.project
-        hist = load_chat_history_for_gemini(state.current_project)
-        state.chat_session = model.start_chat(history=hist)
+        conversation_history = []
         logger.info(f"Switched to project: {state.current_project}")
 
     user_input = request.message
@@ -448,25 +489,34 @@ async def chat_stream_endpoint(request: ChatRequest, background_tasks: Backgroun
 
     async def generate_stream():
         """Generator for SSE stream."""
+        global conversation_history
         full_response = ""
         
         # Send thinking indicator
         yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
         
         # Enrich context
-        full_prompt = await enrich_context(user_input)
+        enriched_context = await enrich_context(user_input)
+        
+        # Add to history
+        conversation_history.append({"role": "user", "content": enriched_context})
+        if len(conversation_history) > 40:
+            conversation_history = conversation_history[-40:]
         
         try:
-            # Use streaming generation
-            response = await state.chat_session.send_message_async(
-                full_prompt,
-                stream=True
-            )
+            # Use Claude streaming
+            with claude_client.messages.stream(
+                model=CHAT_MODEL,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=conversation_history
+            ) as stream:
+                for text in stream.text_stream:
+                    full_response += text
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
             
-            async for chunk in response:
-                if chunk.text:
-                    full_response += chunk.text
-                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk.text})}\n\n"
+            # Add to history
+            conversation_history.append({"role": "assistant", "content": full_response})
             
             # Save complete response
             await update_last_turn_response_async(
@@ -483,7 +533,7 @@ async def chat_stream_endpoint(request: ChatRequest, background_tasks: Backgroun
             yield f"data: {json.dumps({'type': 'done', 'mood': state.soul.state.mood, 'intimacy': state.soul.state.intimacy})}\n\n"
             
         except Exception as e:
-            logger.error(f"Streaming generation failed: {e}")
+            logger.error(f"Claude streaming failed: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(
