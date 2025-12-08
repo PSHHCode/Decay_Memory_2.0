@@ -38,6 +38,7 @@ from flight_recorder_service import (
 import google.generativeai as genai
 from openai import OpenAI
 import anthropic
+from groq import Groq
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -48,6 +49,7 @@ load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
 WEATHER_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 
 # API Authentication
@@ -108,10 +110,13 @@ if not API_KEY or not OPENAI_KEY:
 memory_service.openai_client = OpenAI(api_key=OPENAI_KEY)
 
 # Models
-CHAT_MODEL = "claude-3-5-haiku-latest"  # Claude for chat
-LIBRARIAN_MODEL = "gemini-2.5-flash-lite"  # Gemini 2.5 Flash-Lite for background tasks (cheapest)
+CHAT_MODEL = "llama-3.1-70b-versatile"  # Groq for fast chat (~300 tok/s)
+LIBRARIAN_MODEL = "gemini-2.5-flash-lite"  # Gemini for background tasks (cheap)
 
-# Claude client for main chat
+# Groq client for main chat (fast!)
+groq_client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
+
+# Fallback to Claude if no Groq key
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
 
 SYSTEM_PROMPT = """You are 'Decay_Memory', an AI assistant with persistent memory and emotional awareness.
@@ -413,21 +418,35 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         conversation_history = conversation_history[-40:]
     
     try:
-        # Call Claude
-        response = await asyncio.to_thread(
-            claude_client.messages.create,
-            model=CHAT_MODEL,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=conversation_history
-        )
-        ai_text = response.content[0].text
+        # Use Groq for fast inference, fallback to Claude
+        if groq_client:
+            # Groq uses OpenAI-compatible API
+            groq_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+            response = await asyncio.to_thread(
+                groq_client.chat.completions.create,
+                model=CHAT_MODEL,
+                messages=groq_messages,
+                max_tokens=1024
+            )
+            ai_text = response.choices[0].message.content
+        elif claude_client:
+            # Fallback to Claude
+            response = await asyncio.to_thread(
+                claude_client.messages.create,
+                model="claude-3-5-haiku-latest",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=conversation_history
+            )
+            ai_text = response.content[0].text
+        else:
+            raise HTTPException(status_code=500, detail="No LLM client available")
         
         # Add assistant response to history
         conversation_history.append({"role": "assistant", "content": ai_text})
         
     except Exception as e:
-        logger.error(f"Claude generation failed: {e}")
+        logger.error(f"LLM generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
     # 4. Save Output
@@ -1449,14 +1468,27 @@ async def voice_chat(audio: UploadFile = File(...), language: str = "en"):
     soul_prompt = state.soul.get_system_prompt() if state.soul else SYSTEM_PROMPT
     full_prompt = f"{soul_prompt}\n\nRELEVANT MEMORIES:\n{memory_context}"
     
-    # Use Claude for response
-    response = anthropic_client.messages.create(
-        model=CHAT_MODEL,
-        max_tokens=1024,
-        system=full_prompt,
-        messages=[{"role": "user", "content": user_text}]
-    )
-    ai_text = response.content[0].text
+    # Use Groq for fast response, fallback to Claude
+    if groq_client:
+        response = groq_client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[
+                {"role": "system", "content": full_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            max_tokens=1024
+        )
+        ai_text = response.choices[0].message.content
+    elif claude_client:
+        response = claude_client.messages.create(
+            model="claude-3-5-haiku-latest",
+            max_tokens=1024,
+            system=full_prompt,
+            messages=[{"role": "user", "content": user_text}]
+        )
+        ai_text = response.content[0].text
+    else:
+        raise HTTPException(status_code=500, detail="No LLM client available")
     
     # Update soul state
     if state.soul:

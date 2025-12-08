@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir --prefer-binary \
     google-generativeai \
     openai \
     anthropic \
+    groq \
     elevenlabs \
     qdrant-client \
     networkx \
