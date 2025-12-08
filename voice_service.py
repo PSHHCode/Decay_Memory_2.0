@@ -124,8 +124,6 @@ class VoiceService:
             return None
         
         try:
-            from elevenlabs import VoiceSettings
-            
             # Get voice ID
             voice_id = self.current_voice_id
             if voice_name:
@@ -134,21 +132,21 @@ class VoiceService:
             # Get mood-adjusted settings
             settings = self.get_voice_settings(mood)
             
-            # Generate audio
-            audio = self.client.generate(
+            # Generate audio using new SDK API
+            audio_generator = self.client.text_to_speech.convert(
+                voice_id=voice_id,
                 text=text,
-                voice=voice_id,
-                model="eleven_multilingual_v2",
-                voice_settings=VoiceSettings(
-                    stability=settings["stability"],
-                    similarity_boost=settings["similarity_boost"],
-                    style=settings.get("style", 0.0),
-                    use_speaker_boost=settings.get("use_speaker_boost", True)
-                )
+                model_id="eleven_multilingual_v2",
+                voice_settings={
+                    "stability": settings["stability"],
+                    "similarity_boost": settings["similarity_boost"],
+                    "style": settings.get("style", 0.0),
+                    "use_speaker_boost": settings.get("use_speaker_boost", True)
+                }
             )
             
             # Convert generator to bytes
-            audio_bytes = b"".join(audio)
+            audio_bytes = b"".join(audio_generator)
             
             logger.info(f"Generated {len(audio_bytes)} bytes of audio for mood: {mood}")
             return audio_bytes
@@ -173,26 +171,23 @@ class VoiceService:
             return
         
         try:
-            from elevenlabs import VoiceSettings
-            
             voice_id = self.current_voice_id
             if voice_name:
                 voice_id = AVAILABLE_VOICES.get(voice_name.lower(), self.current_voice_id)
             
             settings = self.get_voice_settings(mood)
             
-            # Stream audio
-            audio_stream = self.client.generate(
+            # Stream audio using new SDK API
+            audio_stream = self.client.text_to_speech.convert_as_stream(
+                voice_id=voice_id,
                 text=text,
-                voice=voice_id,
-                model="eleven_multilingual_v2",
-                voice_settings=VoiceSettings(
-                    stability=settings["stability"],
-                    similarity_boost=settings["similarity_boost"],
-                    style=settings.get("style", 0.0),
-                    use_speaker_boost=settings.get("use_speaker_boost", True)
-                ),
-                stream=True
+                model_id="eleven_multilingual_v2",
+                voice_settings={
+                    "stability": settings["stability"],
+                    "similarity_boost": settings["similarity_boost"],
+                    "style": settings.get("style", 0.0),
+                    "use_speaker_boost": settings.get("use_speaker_boost", True)
+                }
             )
             
             for chunk in audio_stream:
