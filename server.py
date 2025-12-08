@@ -252,7 +252,7 @@ async def lifespan(app: FastAPI):
     # Start Heartbeat Background Task
     asyncio.create_task(heartbeat_loop())
     
-    logger.info(f"System Online. Loaded {len(history)//2} turns.")
+    logger.info(f"System Online. Loaded {len(conversation_history)//2} turns into Claude context.")
     yield
     
     # Shutdown
