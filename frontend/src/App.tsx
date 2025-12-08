@@ -95,14 +95,22 @@ function App() {
     audioChunksRef.current = [];
     
     mediaRecorder.ondataavailable = (event) => {
-      console.log('Audio data received:', event.data.size, 'bytes');
+      // Don't log every chunk to reduce console noise
       if (event.data.size > 0) {
         audioChunksRef.current.push(event.data);
       }
     };
     
+    mediaRecorder.onerror = (event) => {
+      console.error('MediaRecorder error:', event);
+      // Try to restart on error
+      if (voiceChatMode && streamRef.current) {
+        setTimeout(() => startVoiceChatListening(streamRef.current!), 500);
+      }
+    };
+    
     mediaRecorder.onstop = async () => {
-      console.log('MediaRecorder stopped, processing audio...');
+      console.log('MediaRecorder stopped');
       
       // Check if we're exiting voice mode - if so, don't process audio
       if (exitingVoiceModeRef.current) {
@@ -111,7 +119,7 @@ function App() {
       }
       
       const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-      console.log('Audio blob size:', audioBlob.size);
+      console.log('Audio blob size:', audioBlob.size, 'bytes');
       
       // Only process if there's substantial audio (more than ~5KB to filter noise)
       if (audioBlob.size > 5000) {
@@ -119,14 +127,14 @@ function App() {
       } else {
         console.log('Audio too short, restarting listening...');
         // Restart listening if audio was too short
-        if (streamRef.current) {
+        if (voiceChatMode && streamRef.current) {
           startVoiceChatListening(streamRef.current);
         }
       }
     };
     
-    // Start recording with timeslice to collect data periodically
-    mediaRecorder.start(1000); // Collect data every 1 second
+    // Start recording - no timeslice so we get all data at once on stop
+    mediaRecorder.start();
     setVoiceChatStatus('listening');
     console.log('MediaRecorder started, state:', mediaRecorder.state);
   };
