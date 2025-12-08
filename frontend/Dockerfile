@@ -28,6 +28,9 @@ RUN rm /etc/nginx/conf.d/default.conf
 # Copy our custom nginx config (includes /api proxy)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Copy password file for basic auth
+COPY .htpasswd /etc/nginx/.htpasswd
+
 # Copy built React app
 COPY --from=build /app/dist /usr/share/nginx/html
 
