@@ -40,6 +40,7 @@ function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const exitingVoiceModeRef = useRef(false);  // Track when we're exiting to avoid phantom transcriptions
   
   // ===== VOICE CHAT MODE ("Her" style) =====
   
@@ -58,10 +59,13 @@ function App() {
   };
   
   const stopVoiceChatMode = () => {
+    // Set flag BEFORE stopping recorder to prevent phantom transcription
+    exitingVoiceModeRef.current = true;
+    
     setVoiceChatMode(false);
     setVoiceChatStatus('idle');
     
-    // Stop any recording
+    // Stop any recording (onstop will check exitingVoiceModeRef)
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
@@ -77,44 +81,71 @@ function App() {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+    
+    // Reset flag after a short delay
+    setTimeout(() => { exitingVoiceModeRef.current = false; }, 100);
   };
   
   const startVoiceChatListening = (stream: MediaStream) => {
-    if (!voiceChatMode && !streamRef.current) return;
+    console.log('Starting voice chat listening...');
     
     const mediaRecorder = new MediaRecorder(stream);
     mediaRecorderRef.current = mediaRecorder;
     audioChunksRef.current = [];
     
     mediaRecorder.ondataavailable = (event) => {
+      console.log('Audio data received:', event.data.size, 'bytes');
       if (event.data.size > 0) {
         audioChunksRef.current.push(event.data);
       }
     };
     
     mediaRecorder.onstop = async () => {
-      if (!voiceChatMode) return; // User exited voice mode
+      console.log('MediaRecorder stopped, processing audio...');
+      
+      // Check if we're exiting voice mode - if so, don't process audio
+      if (exitingVoiceModeRef.current) {
+        console.log('Exiting voice mode, skipping transcription');
+        return;
+      }
       
       const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      console.log('Audio blob size:', audioBlob.size);
       
       // Only process if there's actual audio (more than ~1KB)
       if (audioBlob.size > 1000) {
         await processVoiceChatInput(audioBlob);
       } else {
+        console.log('Audio too short, restarting listening...');
         // Restart listening if audio was too short
-        if (voiceChatMode && streamRef.current) {
+        if (streamRef.current) {
           startVoiceChatListening(streamRef.current);
         }
       }
     };
     
-    mediaRecorder.start();
+    // Start recording with timeslice to collect data periodically
+    mediaRecorder.start(1000); // Collect data every 1 second
     setVoiceChatStatus('listening');
+    console.log('MediaRecorder started, state:', mediaRecorder.state);
   };
   
   const stopVoiceChatListening = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
+    console.log('stopVoiceChatListening called');
+    console.log('mediaRecorderRef.current:', mediaRecorderRef.current);
+    console.log('state:', mediaRecorderRef.current?.state);
+    
+    if (mediaRecorderRef.current) {
+      const state = mediaRecorderRef.current.state;
+      if (state === 'recording' || state === 'paused') {
+        console.log('Stopping MediaRecorder...');
+        mediaRecorderRef.current.stop();
+        setVoiceChatStatus('thinking');
+      } else {
+        console.log('MediaRecorder not in recording state:', state);
+      }
+    } else {
+      console.log('No mediaRecorder ref!');
     }
   };
   
@@ -175,21 +206,31 @@ function App() {
       setMessages(prev => [...prev, aiMsg]);
       
       // 3. Speak the response
+      console.log('Speaking response...');
       setVoiceChatStatus('speaking');
       await speakAndWait(chatData.response);
+      console.log('Speech finished!');
       
       // 4. Restart listening (continuous conversation)
-      if (voiceChatMode && streamRef.current) {
+      console.log('Checking for restart - voiceChatMode:', voiceChatMode, 'streamRef:', streamRef.current);
+      if (streamRef.current) {
+        console.log('Restarting listening...');
+        setVoiceChatStatus('listening');
         startVoiceChatListening(streamRef.current);
+      } else {
+        console.log('No stream ref, cannot restart listening');
+        setVoiceChatStatus('idle');
       }
       
     } catch (error) {
       console.error('Voice chat error:', error);
       setVoiceChatStatus('idle');
       // Restart listening on error
-      if (voiceChatMode && streamRef.current) {
+      if (streamRef.current) {
         setTimeout(() => {
-          if (voiceChatMode && streamRef.current) {
+          if (streamRef.current) {
+            console.log('Restarting after error...');
+            setVoiceChatStatus('listening');
             startVoiceChatListening(streamRef.current);
           }
         }, 1000);
@@ -199,35 +240,47 @@ function App() {
   
   const speakAndWait = (text: string): Promise<void> => {
     return new Promise(async (resolve) => {
+      console.log('speakAndWait: starting for text length:', text.length);
       try {
         const response = await authFetch(`${API_BASE}/voice/speak`, {
           method: 'POST',
           body: JSON.stringify({ message: text }),
         });
         
+        console.log('speakAndWait: got response, ok:', response.ok);
+        
         if (response.ok) {
           const audioBlob = await response.blob();
+          console.log('speakAndWait: audio blob size:', audioBlob.size);
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
           audioRef.current = audio;
           
           audio.onended = () => {
+            console.log('speakAndWait: audio ended naturally');
             URL.revokeObjectURL(audioUrl);
             audioRef.current = null;
             resolve();
           };
           
-          audio.onerror = () => {
+          audio.onerror = (e) => {
+            console.log('speakAndWait: audio error:', e);
             URL.revokeObjectURL(audioUrl);
             audioRef.current = null;
             resolve();
           };
           
-          audio.play();
+          console.log('speakAndWait: playing audio...');
+          audio.play().catch(e => {
+            console.log('speakAndWait: play() error:', e);
+            resolve();
+          });
         } else {
+          console.log('speakAndWait: response not ok');
           resolve();
         }
-      } catch {
+      } catch (err) {
+        console.log('speakAndWait: catch error:', err);
         resolve();
       }
     });
@@ -394,11 +447,19 @@ function App() {
             </div>
             <div className="voice-chat-controls">
               {voiceChatStatus === 'listening' && (
-                <button className="voice-stop-btn" onClick={stopVoiceChatListening}>
+                <button 
+                  type="button"
+                  className="voice-stop-btn" 
+                  onClick={() => { console.log('Done Speaking clicked!'); stopVoiceChatListening(); }}
+                >
                   <MicOff size={20} /> Done Speaking
                 </button>
               )}
-              <button className="voice-exit-btn" onClick={stopVoiceChatMode}>
+              <button 
+                type="button"
+                className="voice-exit-btn" 
+                onClick={() => { console.log('End Voice Chat clicked!'); stopVoiceChatMode(); }}
+              >
                 <PhoneOff size={20} /> End Voice Chat
               </button>
             </div>
