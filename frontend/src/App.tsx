@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Bot, User, Terminal, Cpu, Settings, MessageSquare, MicOff, Phone, PhoneOff } from 'lucide-react';
+import { Send, Bot, User, Cpu, Settings, MessageSquare, MicOff, Phone, PhoneOff } from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
 import Dashboard from './Dashboard';
 import './App.css';
@@ -443,10 +443,6 @@ function App() {
           <span className={`status-indicator ${status.includes('Online') ? 'online' : 'offline'}`}>
             {status}
           </span>
-          <div className="project-selector">
-            <Terminal size={14} />
-            <span>Project: {project}</span>
-          </div>
         </div>
       </header>
 
@@ -510,7 +506,7 @@ function App() {
                   {msg.mood && typeof msg.intimacy === 'number' && (
                     <div className="meta-tag">
                       Mood: {msg.mood} • Intimacy: {(msg.intimacy * 100).toFixed(0)}%
-                      {msg.response_time_ms && ` • ${(msg.response_time_ms / 1000).toFixed(1)}s`}
+                      {msg.response_time_ms && ` • Response Time: ${(msg.response_time_ms / 1000).toFixed(1)}s`}
                     </div>
                   )}
                 </div>
