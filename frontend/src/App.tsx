@@ -38,6 +38,9 @@ function App() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   
+  // Toggle voice on/off
+  const toggleVoice = () => setVoiceEnabled(!voiceEnabled);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -207,6 +210,13 @@ function App() {
           </button>
         </div>
         <div className="status-bar">
+          <button 
+            className={`voice-toggle ${voiceEnabled ? 'enabled' : 'disabled'}`}
+            onClick={toggleVoice}
+            title={voiceEnabled ? 'Voice enabled' : 'Voice disabled'}
+          >
+            {voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+          </button>
           <span className={`status-indicator ${status.includes('Online') ? 'online' : 'offline'}`}>
             {status}
           </span>
