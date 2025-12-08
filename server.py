@@ -1015,6 +1015,31 @@ async def get_mood_history():
     """Get recent mood transition history."""
     return {"history": state.soul.state.mood_history[-20:]}
 
+class SoulUpdateRequest(BaseModel):
+    intimacy: Optional[float] = None
+    energy: Optional[float] = None
+    mood: Optional[str] = None
+
+@app.put("/soul/state")
+async def update_soul_state(request: SoulUpdateRequest):
+    """
+    Update soul state values (intimacy, energy, mood).
+    Used by dashboard to manually adjust relationship level.
+    """
+    if request.intimacy is not None:
+        state.soul.state.intimacy = max(0.0, min(1.0, request.intimacy))
+    if request.energy is not None:
+        state.soul.state.energy = max(0.0, min(1.0, request.energy))
+    if request.mood is not None:
+        from soul import VALID_MOODS
+        if request.mood in VALID_MOODS:
+            state.soul.state.mood = request.mood
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid mood. Valid: {VALID_MOODS}")
+    
+    state.soul.save()
+    return {"result": "✅ Soul state updated", "state": state.soul.get_emotional_context()}
+
 
 # =============================================================================
 # EMOTIONAL SEARCH ENDPOINTS (Phase 1.1)
@@ -1241,6 +1266,18 @@ async def curiosity_shareable():
 from voice_service import get_voice_service, get_stt_service, AVAILABLE_VOICES
 from fastapi import UploadFile, File
 
+# Global voice settings (can be updated via dashboard)
+voice_settings = {
+    "stability": 0.5,
+    "similarity_boost": 0.75,
+    "style": 0.0
+}
+
+class VoiceSettingsRequest(BaseModel):
+    stability: Optional[float] = None
+    similarity_boost: Optional[float] = None
+    style: Optional[float] = None
+
 @app.get("/voice/status")
 async def voice_status():
     """Check if voice service is available and get account info."""
@@ -1259,6 +1296,55 @@ async def voice_list():
         "voices": AVAILABLE_VOICES,
         "current": voice.current_voice_id
     }
+
+@app.get("/voice/settings")
+async def voice_get_settings():
+    """Get current voice settings."""
+    return {
+        "settings": voice_settings,
+        "available_voices": AVAILABLE_VOICES
+    }
+
+@app.put("/voice/settings")
+async def voice_update_settings(request: VoiceSettingsRequest):
+    """Update voice settings (stability, similarity_boost, style)."""
+    if request.stability is not None:
+        voice_settings["stability"] = max(0.2, min(0.8, request.stability))
+    if request.similarity_boost is not None:
+        voice_settings["similarity_boost"] = max(0.3, min(1.0, request.similarity_boost))
+    if request.style is not None:
+        voice_settings["style"] = max(0.0, min(0.5, request.style))
+    return {"result": "✅ Voice settings updated", "settings": voice_settings}
+
+@app.post("/voice/test")
+async def voice_test():
+    """Generate a test audio sample with current settings."""
+    voice = get_voice_service()
+    if not voice.is_available():
+        raise HTTPException(status_code=503, detail="Voice service not available")
+    
+    # Get current mood
+    mood = "neutral"
+    if state.soul:
+        mood = state.soul.state.mood
+    
+    # Test phrase that demonstrates the voice
+    test_phrase = f"Hello! I'm feeling {mood} right now. This is how I sound with the current voice settings."
+    
+    # Override voice settings for this request
+    voice.default_settings = {
+        "stability": voice_settings["stability"],
+        "similarity_boost": voice_settings["similarity_boost"],
+        "style": voice_settings["style"],
+        "use_speaker_boost": True
+    }
+    
+    audio = voice.text_to_speech(test_phrase, mood=mood)
+    if audio is None:
+        raise HTTPException(status_code=500, detail="Failed to generate test audio")
+    
+    from fastapi.responses import Response
+    return Response(content=audio, media_type="audio/mpeg")
 
 @app.post("/voice/set/{voice_name}")
 async def voice_set(voice_name: str):

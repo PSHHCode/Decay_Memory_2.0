@@ -55,6 +55,12 @@ EMOTION_VAD_MAP: Dict[str, Tuple[float, float, float]] = {
 }
 
 # Emotional transition triggers
+# Valid mood states
+VALID_MOODS = [
+    "neutral", "warm", "thoughtful", "concerned", "joyful", 
+    "lonely", "tired", "playful", "curious", "excited", "calm"
+]
+
 MOOD_TRIGGERS: Dict[str, Dict[str, Any]] = {
     "greeting_morning": {"target": "warm", "valence_boost": 0.1},
     "deep_conversation": {"target": "thoughtful", "intimacy_boost": 0.02},
