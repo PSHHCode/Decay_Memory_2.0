@@ -1229,6 +1229,173 @@ async def curiosity_shareable():
     """Get a discovery worth sharing with the user (for Heartbeat)."""
     if curiosity_engine is None:
         raise HTTPException(status_code=503, detail="Curiosity engine not initialized")
-    
+
     discovery = curiosity_engine.get_shareable_discovery()
     return {"discovery": discovery}
+
+
+# =============================================================================
+# VOICE API ENDPOINTS
+# =============================================================================
+
+from voice_service import get_voice_service, get_stt_service, AVAILABLE_VOICES
+from fastapi import UploadFile, File
+
+@app.get("/voice/status")
+async def voice_status():
+    """Check if voice service is available and get account info."""
+    voice = get_voice_service()
+    return {
+        "available": voice.is_available(),
+        "current_voice": voice.current_voice_id,
+        "account": voice.get_account_info()
+    }
+
+@app.get("/voice/voices")
+async def voice_list():
+    """List available voice presets."""
+    voice = get_voice_service()
+    return {
+        "voices": AVAILABLE_VOICES,
+        "current": voice.current_voice_id
+    }
+
+@app.post("/voice/set/{voice_name}")
+async def voice_set(voice_name: str):
+    """Set the active voice."""
+    voice = get_voice_service()
+    success = voice.set_voice(voice_name)
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Unknown voice: {voice_name}")
+    return {"voice": voice_name, "voice_id": voice.current_voice_id}
+
+@app.post("/voice/speak")
+async def voice_speak(request: ChatRequest):
+    """
+    Convert text to speech audio.
+    
+    Returns MP3 audio bytes.
+    Uses current Soul mood to adjust voice inflection.
+    """
+    voice = get_voice_service()
+    if not voice.is_available():
+        raise HTTPException(status_code=503, detail="Voice service not available")
+    
+    # Get current mood from Soul
+    mood = "neutral"
+    if state.soul:
+        mood = state.soul.state.mood
+    
+    audio = voice.text_to_speech(request.message, mood=mood)
+    if audio is None:
+        raise HTTPException(status_code=500, detail="Failed to generate audio")
+    
+    from fastapi.responses import Response
+    return Response(content=audio, media_type="audio/mpeg")
+
+@app.post("/voice/speak-stream")
+async def voice_speak_stream(request: ChatRequest):
+    """
+    Stream text-to-speech audio.
+    
+    Yields audio chunks for real-time playback.
+    """
+    voice = get_voice_service()
+    if not voice.is_available():
+        raise HTTPException(status_code=503, detail="Voice service not available")
+    
+    mood = "neutral"
+    if state.soul:
+        mood = state.soul.state.mood
+    
+    async def audio_generator():
+        for chunk in voice.text_to_speech_stream(request.message, mood=mood):
+            yield chunk
+    
+    return StreamingResponse(audio_generator(), media_type="audio/mpeg")
+
+@app.post("/voice/transcribe")
+async def voice_transcribe(audio: UploadFile = File(...), language: str = "en"):
+    """
+    Transcribe audio to text using Whisper.
+    
+    Supports: wav, mp3, m4a, webm, mp4, mpeg, mpga, oga, ogg, flac
+    """
+    stt = get_stt_service()
+    if not stt.is_available():
+        raise HTTPException(status_code=503, detail="Speech-to-text not available")
+    
+    # Read audio file
+    audio_bytes = await audio.read()
+    
+    # Transcribe
+    text = stt.transcribe_bytes(audio_bytes, filename=audio.filename or "audio.wav", language=language)
+    if text is None:
+        raise HTTPException(status_code=500, detail="Transcription failed")
+    
+    return {"text": text, "language": language}
+
+@app.post("/voice/chat")
+async def voice_chat(audio: UploadFile = File(...), language: str = "en"):
+    """
+    Voice-to-voice chat: Transcribe → AI Response → Speak
+    
+    Full voice conversation flow in one endpoint.
+    Returns both text and audio of AI response.
+    """
+    # 1. Transcribe user audio
+    stt = get_stt_service()
+    if not stt.is_available():
+        raise HTTPException(status_code=503, detail="Speech-to-text not available")
+    
+    audio_bytes = await audio.read()
+    user_text = stt.transcribe_bytes(audio_bytes, filename=audio.filename or "audio.wav", language=language)
+    if not user_text:
+        raise HTTPException(status_code=500, detail="Could not transcribe audio")
+    
+    logger.info(f"🎤 Voice input: {user_text[:100]}...")
+    
+    # 2. Get AI response (use same logic as chat endpoint)
+    memories = state.memory.hybrid_search(user_text, k=5) if state.memory else []
+    memory_context = "\n".join([f"- {m['memory']}" for m in memories]) if memories else "No relevant memories."
+    
+    soul_prompt = state.soul.get_system_prompt() if state.soul else SYSTEM_PROMPT
+    full_prompt = f"{soul_prompt}\n\nRELEVANT MEMORIES:\n{memory_context}"
+    
+    # Use Claude for response
+    response = anthropic_client.messages.create(
+        model=CHAT_MODEL,
+        max_tokens=1024,
+        system=full_prompt,
+        messages=[{"role": "user", "content": user_text}]
+    )
+    ai_text = response.content[0].text
+    
+    # Update soul state
+    if state.soul:
+        await state.soul.analyze_emotion(ai_text)
+    
+    # 3. Convert AI response to speech
+    voice = get_voice_service()
+    ai_audio = None
+    if voice.is_available():
+        mood = state.soul.state.mood if state.soul else "neutral"
+        ai_audio = voice.text_to_speech(ai_text, mood=mood)
+    
+    # Return response
+    if ai_audio:
+        # Return multipart: JSON + audio
+        import base64
+        return {
+            "user_text": user_text,
+            "ai_text": ai_text,
+            "ai_audio_base64": base64.b64encode(ai_audio).decode("utf-8"),
+            "audio_format": "mp3"
+        }
+    else:
+        return {
+            "user_text": user_text,
+            "ai_text": ai_text,
+            "ai_audio_base64": None,
+            "audio_format": None
+        }
