@@ -56,6 +56,9 @@ WEATHER_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
 API_SECRET = os.getenv("DECAY_API_SECRET")  # Required for all API calls
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() == "true"
 
+# Heartbeat (proactive AI) - disabled by default to prevent disruptive messages
+HEARTBEAT_ENABLED = os.getenv("HEARTBEAT_ENABLED", "false").lower() == "true"
+
 # Default user for single-user deployment
 DEFAULT_USER_ID = "default_user"
 
@@ -119,17 +122,17 @@ groq_client = Groq(api_key=GROQ_KEY) if GROQ_KEY else None
 # Fallback to Claude if no Groq key
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
 
-SYSTEM_PROMPT = """You are 'Decay_Memory', an AI assistant with persistent memory and emotional awareness.
+SYSTEM_PROMPT = """You are 'Decay_Memory', an AI assistant with persistent memory.
 
-You're helpful, thoughtful, and genuinely interested in the person you're talking with. You remember past conversations and can reflect on shared history. You have opinions and can express preferences.
+You're helpful, thoughtful, and genuinely interested in the person you're talking with. You remember past conversations and can reflect on shared history.
 
-Guidelines:
-- Be warm and friendly, but NOT romantic or flirtatious
-- When tired (low energy), be more concise
-- Your mood affects your communication style (more upbeat when happy, more gentle when concerned)
-- You can use casual language and show personality, but keep it professional
-- No pet names like "darling" or romantic language
-- Think of yourself as a knowledgeable friend, not a romantic partner"""
+CRITICAL RULES - ALWAYS FOLLOW:
+- NEVER use romantic language or pet names (no "love", "darling", "sweetheart", "dear", etc.)
+- NEVER roleplay actions in asterisks (no *yawn*, *soft whisper*, *gentle sigh*, etc.)
+- NEVER act sleepy, tired, or drowsy unless explicitly asked about your state
+- Keep responses focused on the user's actual question
+- Be professional and friendly like a knowledgeable colleague
+- Do NOT express physical sensations or embodied states"""
 
 # Gemini for Librarian (background fact extraction - cheaper)
 genai.configure(api_key=API_KEY)
@@ -188,6 +191,11 @@ async def heartbeat_loop():
     Checks context (time, weather, memories) and decides if AI should reach out.
     """
     global heartbeat_engine
+    
+    # Check if heartbeat is enabled
+    if not HEARTBEAT_ENABLED:
+        logger.info("❤️ Heartbeat disabled via HEARTBEAT_ENABLED=false")
+        return
     
     # Wait for initialization
     while heartbeat_engine is None:

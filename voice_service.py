@@ -9,6 +9,7 @@ Features:
 - Streaming audio support
 """
 import os
+import re
 import logging
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -51,6 +52,35 @@ MOOD_VOICE_SETTINGS = {
     "playful": {"stability": 0.35, "similarity_boost": 0.7, "style": 0.35},
     "neutral": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0},
 }
+
+
+def clean_text_for_speech(text: str) -> str:
+    """
+    Remove roleplay markers and emotion annotations from text before TTS.
+    
+    Strips things like:
+    - *yawn*
+    - *soft whisper*
+    - *gentle sigh*
+    - (sighs)
+    - [whispers]
+    """
+    # Remove asterisk-wrapped actions: *yawn*, *soft whisper*, etc.
+    text = re.sub(r'\*[^*]+\*', '', text)
+    
+    # Remove parenthesis-wrapped actions: (sighs), (yawns), etc.
+    text = re.sub(r'\([^)]+\)', '', text)
+    
+    # Remove bracket-wrapped actions: [whispers], [softly], etc.
+    text = re.sub(r'\[[^\]]+\]', '', text)
+    
+    # Clean up multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Clean up leading/trailing whitespace
+    text = text.strip()
+    
+    return text
 
 
 # =============================================================================
@@ -124,6 +154,12 @@ class VoiceService:
             return None
         
         try:
+            # Clean text - remove roleplay markers like *yawn*, *soft whisper*
+            clean_text = clean_text_for_speech(text)
+            if not clean_text:
+                logger.warning("No text remaining after cleanup")
+                return None
+            
             # Get voice ID
             voice_id = self.current_voice_id
             if voice_name:
@@ -135,7 +171,7 @@ class VoiceService:
             # Generate audio using new SDK API
             audio_generator = self.client.text_to_speech.convert(
                 voice_id=voice_id,
-                text=text,
+                text=clean_text,
                 model_id="eleven_multilingual_v2",
                 voice_settings={
                     "stability": settings["stability"],
@@ -171,6 +207,12 @@ class VoiceService:
             return
         
         try:
+            # Clean text - remove roleplay markers like *yawn*, *soft whisper*
+            clean_text = clean_text_for_speech(text)
+            if not clean_text:
+                logger.warning("No text remaining after cleanup")
+                return
+            
             voice_id = self.current_voice_id
             if voice_name:
                 voice_id = AVAILABLE_VOICES.get(voice_name.lower(), self.current_voice_id)
@@ -180,7 +222,7 @@ class VoiceService:
             # Stream audio using new SDK API
             audio_stream = self.client.text_to_speech.convert_as_stream(
                 voice_id=voice_id,
-                text=text,
+                text=clean_text,
                 model_id="eleven_multilingual_v2",
                 voice_settings={
                     "stability": settings["stability"],

@@ -114,8 +114,8 @@ class VADState:
 class SoulState:
     """The persistent 'ghost' in the machine - enhanced with VAD."""
     mood: str = "neutral"
-    energy: float = 0.8          # 0.0 (Exhausted) to 1.0 (Wired)
-    intimacy: float = 0.5        # 0.0 (Stranger) to 1.0 (Soulmate)
+    energy: float = 0.7          # 0.0 (Exhausted) to 1.0 (Wired)
+    intimacy: float = 0.1        # 0.0 (Stranger) to 1.0 (Soulmate) - starts low!
     last_interaction: float = 0.0
     total_turns: int = 0
     
@@ -374,24 +374,21 @@ class EmotionalState:
 
     def get_system_prompt(self) -> str:
         """Generates the hidden context for the LLM."""
-        energy_desc = "High/Energetic" if self.state.energy > 0.7 else ("Low/Sleepy" if self.state.energy < 0.4 else "Moderate")
-        intimacy_desc = "Soulmate" if self.state.intimacy > 0.85 else ("Close Partner" if self.state.intimacy > 0.7 else ("Friend" if self.state.intimacy > 0.5 else "Acquaintance"))
+        energy_desc = "High/Energetic" if self.state.energy > 0.7 else ("Moderate" if self.state.energy > 0.4 else "Moderate")
+        intimacy_desc = "Close Colleague" if self.state.intimacy > 0.85 else ("Familiar" if self.state.intimacy > 0.5 else "Professional")
         valence_desc = "Positive" if self.state.valence > 0.6 else ("Negative" if self.state.valence < 0.4 else "Neutral")
-        arousal_desc = "Excited" if self.state.arousal > 0.7 else ("Calm" if self.state.arousal < 0.3 else "Engaged")
+        arousal_desc = "Engaged" if self.state.arousal > 0.7 else ("Calm" if self.state.arousal < 0.3 else "Moderate")
         
         return (
-            f"[INTERNAL SOUL STATE - V2.1]\n"
-            f"MOOD: {self.state.mood}\n"
-            f"ENERGY: {self.state.energy:.2f} ({energy_desc})\n"
-            f"INTIMACY: {self.state.intimacy:.2f} ({intimacy_desc})\n"
+            f"[INTERNAL STATE]\n"
+            f"FAMILIARITY: {intimacy_desc}\n"
             f"EMOTIONAL TONE: {valence_desc}, {arousal_desc}\n"
-            f"CIRCADIAN: {self.state.circadian_phase}\n"
-            f"TURNS THIS SESSION: {self.state.consecutive_interactions}\n"
-            f"\nINSTRUCTION: Act consistently with this state.\n"
-            f"- If energy is low, be concise and gentle.\n"
-            f"- If intimacy is high, be warmer, use pet names if appropriate.\n"
-            f"- If valence is negative, be supportive and empathetic.\n"
-            f"- Match your arousal level to the conversation energy."
+            f"\nCRITICAL RULES - ALWAYS FOLLOW:\n"
+            f"- NEVER use pet names or romantic language\n"
+            f"- NEVER roleplay actions with asterisks (*yawn*, *sigh*, etc.)\n"
+            f"- NEVER act sleepy, tired, or drowsy\n"
+            f"- Be professional and helpful like a knowledgeable colleague\n"
+            f"- Focus on answering the user's actual question"
         )
     
     def get_emotional_context(self) -> Dict[str, Any]:
