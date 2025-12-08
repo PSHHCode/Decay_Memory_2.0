@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir --prefer-binary \
     openai \
     anthropic \
     groq \
+    deepgram-sdk \
     elevenlabs \
     qdrant-client \
     networkx \

@@ -220,37 +220,53 @@ class VoiceService:
 
 
 # =============================================================================
-# SPEECH-TO-TEXT (WHISPER)
+# SPEECH-TO-TEXT (DEEPGRAM - FAST!)
 # =============================================================================
 
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 class SpeechToText:
     """
-    OpenAI Whisper Speech-to-Text Service
+    Speech-to-Text Service with Deepgram (fast) and Whisper (fallback).
     
-    Converts audio to text for voice input.
+    Deepgram is ~2-3x faster than Whisper with similar accuracy.
     """
     
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or OPENAI_API_KEY
-        self.client = None
+    def __init__(self):
+        self.deepgram_client = None
+        self.whisper_client = None
+        self.use_deepgram = False
         
-        if self.api_key:
+        # Try Deepgram first (faster)
+        if DEEPGRAM_API_KEY:
+            try:
+                from deepgram import DeepgramClient
+                self.deepgram_client = DeepgramClient(DEEPGRAM_API_KEY)
+                self.use_deepgram = True
+                logger.info("🎧 Speech-to-Text initialized with Deepgram (fast!)")
+            except ImportError:
+                logger.warning("deepgram-sdk not installed")
+            except Exception as e:
+                logger.error(f"Failed to initialize Deepgram: {e}")
+        
+        # Fallback to Whisper
+        if not self.use_deepgram and OPENAI_API_KEY:
             try:
                 from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key)
-                logger.info("🎧 Speech-to-Text initialized with Whisper")
+                self.whisper_client = OpenAI(api_key=OPENAI_API_KEY)
+                logger.info("🎧 Speech-to-Text initialized with Whisper (fallback)")
             except ImportError:
                 logger.warning("openai package not installed")
             except Exception as e:
                 logger.error(f"Failed to initialize Whisper: {e}")
-        else:
-            logger.warning("No OPENAI_API_KEY set - speech-to-text disabled")
+        
+        if not self.deepgram_client and not self.whisper_client:
+            logger.warning("No STT service available - check API keys")
     
     def is_available(self) -> bool:
         """Check if speech-to-text is available."""
-        return self.client is not None
+        return self.deepgram_client is not None or self.whisper_client is not None
     
     def transcribe(self, audio_file, language: str = "en") -> Optional[str]:
         """
@@ -263,21 +279,9 @@ class SpeechToText:
         Returns:
             Transcribed text or None if failed
         """
-        if not self.client:
-            logger.warning("Speech-to-text not available")
-            return None
-        
-        try:
-            transcription = self.client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language=language
-            )
-            logger.info(f"Transcribed audio: {len(transcription.text)} chars")
-            return transcription.text
-        except Exception as e:
-            logger.error(f"Transcription failed: {e}")
-            return None
+        # Read file to bytes
+        audio_bytes = audio_file.read()
+        return self.transcribe_bytes(audio_bytes, language=language)
     
     def transcribe_bytes(self, audio_bytes: bytes, filename: str = "audio.wav", language: str = "en") -> Optional[str]:
         """
@@ -291,17 +295,56 @@ class SpeechToText:
         Returns:
             Transcribed text or None
         """
-        if not self.client:
-            return None
+        import time
+        start = time.time()
         
-        try:
-            import io
-            audio_file = io.BytesIO(audio_bytes)
-            audio_file.name = filename
-            return self.transcribe(audio_file, language)
-        except Exception as e:
-            logger.error(f"Transcription from bytes failed: {e}")
-            return None
+        # Try Deepgram first
+        if self.deepgram_client:
+            try:
+                from deepgram import PrerecordedOptions
+                
+                options = PrerecordedOptions(
+                    model="nova-2",  # Fastest, most accurate model
+                    language=language,
+                    smart_format=True,
+                    punctuate=True
+                )
+                
+                response = self.deepgram_client.listen.rest.v("1").transcribe_file(
+                    {"buffer": audio_bytes, "mimetype": "audio/webm"},
+                    options
+                )
+                
+                transcript = response.results.channels[0].alternatives[0].transcript
+                elapsed = time.time() - start
+                logger.info(f"🎧 Deepgram transcribed {len(transcript)} chars in {elapsed:.2f}s")
+                return transcript
+                
+            except Exception as e:
+                logger.error(f"Deepgram transcription failed: {e}")
+                # Fall through to Whisper
+        
+        # Fallback to Whisper
+        if self.whisper_client:
+            try:
+                import io
+                audio_file = io.BytesIO(audio_bytes)
+                audio_file.name = filename
+                
+                transcription = self.whisper_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language=language
+                )
+                elapsed = time.time() - start
+                logger.info(f"🎧 Whisper transcribed {len(transcription.text)} chars in {elapsed:.2f}s")
+                return transcription.text
+            except Exception as e:
+                logger.error(f"Whisper transcription failed: {e}")
+                return None
+        
+        logger.error("No STT service available")
+        return None
 
 
 # =============================================================================
