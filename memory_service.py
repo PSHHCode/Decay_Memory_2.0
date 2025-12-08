@@ -209,7 +209,7 @@ def extract_knowledge_graph_data(content: str) -> Optional[Dict[str, Any]]:
     )
     try:
         res = genai.GenerativeModel(
-            'gemini-2.0-flash',
+            'gemini-2.5-flash-lite',
             generation_config={"response_mime_type": "application/json"}
         ).generate_content(prompt)
         data = json.loads(res.text)
@@ -540,7 +540,7 @@ Focus on what the user is actually asking about or referencing.
 Return ONLY the search query, nothing else."""
 
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         result = model.generate_content(prompt)
         query = result.text.strip().strip('"').strip("'")
         return query
@@ -1303,7 +1303,7 @@ class MemorySystem:
             )
             
             model = genai.GenerativeModel(
-                'gemini-2.0-flash',
+                'gemini-2.5-flash-lite',
                 generation_config={"response_mime_type": "application/json"}
             )
             response = model.generate_content(prompt)
@@ -1564,7 +1564,7 @@ class MemorySystem:
         prompt = f"Extract facts JSON list. Types: personal,project,topic.\n{summary}"
         try:
             result = genai.GenerativeModel(
-                'gemini-2.0-flash',
+                'gemini-2.5-flash-lite',
                 generation_config={"response_mime_type": "application/json"}
             ).generate_content(prompt)
             mems = json.loads(result.text)
@@ -1586,7 +1586,7 @@ class MemorySystem:
                 f"JSON: summary, last_topic, unresolved.\n{summary}"
             )
             result = genai.GenerativeModel(
-                'gemini-2.0-flash',
+                'gemini-2.5-flash-lite',
                 generation_config={"response_mime_type": "application/json"}
             ).generate_content(prompt)
             ho = json.loads(result.text)

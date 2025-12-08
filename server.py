@@ -109,7 +109,7 @@ memory_service.openai_client = OpenAI(api_key=OPENAI_KEY)
 
 # Models
 CHAT_MODEL = "claude-3-5-haiku-latest"  # Claude for chat
-LIBRARIAN_MODEL = "gemini-2.0-flash"     # Gemini for background tasks (cheaper)
+LIBRARIAN_MODEL = "gemini-2.5-flash-lite"  # Gemini 2.5 Flash-Lite for background tasks (cheapest)
 
 # Claude client for main chat
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None

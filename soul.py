@@ -434,7 +434,7 @@ Return ONLY the JSON object."""
 
     try:
         model = genai.GenerativeModel(
-            'gemini-2.0-flash',
+            'gemini-2.5-flash-lite',
             generation_config={"response_mime_type": "application/json"}
         )
         result = model.generate_content(prompt)

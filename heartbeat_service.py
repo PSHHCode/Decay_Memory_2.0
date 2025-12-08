@@ -248,7 +248,7 @@ Return JSON:
 
     try:
         model = genai.GenerativeModel(
-            'gemini-2.0-flash',
+            'gemini-2.5-flash-lite',
             generation_config={"response_mime_type": "application/json"}
         )
         result = await asyncio.to_thread(model.generate_content, prompt)
