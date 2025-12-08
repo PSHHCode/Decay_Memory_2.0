@@ -256,3 +256,183 @@ button:disabled { opacity: 0.5; }
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* Voice Chat Button in Header */
+.voice-chat-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  background: linear-gradient(135deg, #7ee787 0%, #58a6ff 100%);
+  border: none;
+  border-radius: 20px;
+  color: #0d1117;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.voice-chat-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 20px rgba(126, 231, 135, 0.4);
+}
+
+/* Voice Chat Overlay */
+.voice-chat-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-chat-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2rem;
+  padding: 2rem;
+}
+
+/* The Orb - Visual indicator */
+.voice-orb {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #58a6ff, #1f6feb, #0d1117);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.voice-orb::before {
+  content: '';
+  position: absolute;
+  width: 170px;
+  height: 170px;
+  border-radius: 50%;
+  border: 2px solid rgba(88, 166, 255, 0.3);
+  animation: pulse-ring 2s infinite;
+}
+
+.voice-orb.listening {
+  background: radial-gradient(circle at 30% 30%, #7ee787, #238636, #0d1117);
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+.voice-orb.listening::before {
+  border-color: rgba(126, 231, 135, 0.5);
+}
+
+.voice-orb.thinking {
+  background: radial-gradient(circle at 30% 30%, #f0883e, #9e6a03, #0d1117);
+  animation: spin-slow 3s linear infinite;
+}
+
+.voice-orb.thinking::before {
+  border-color: rgba(240, 136, 62, 0.5);
+}
+
+.voice-orb.speaking {
+  background: radial-gradient(circle at 30% 30%, #a371f7, #8957e5, #0d1117);
+  animation: pulse-speak 0.5s ease-in-out infinite;
+}
+
+.voice-orb.speaking::before {
+  border-color: rgba(163, 113, 247, 0.5);
+}
+
+.orb-inner {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.3); opacity: 0; }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-speak {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+.voice-status-text {
+  font-size: 1.5rem;
+  font-weight: 300;
+  color: #c9d1d9;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.voice-chat-controls {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.voice-stop-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1.5rem;
+  background: #238636;
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.voice-stop-btn:hover {
+  background: #2ea043;
+  transform: translateY(-2px);
+}
+
+.voice-exit-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1.5rem;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  color: #f85149;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.voice-exit-btn:hover {
+  background: rgba(248, 81, 73, 0.1);
+  border-color: #f85149;
+}
+
+.voice-hint {
+  color: #8b949e;
+  font-size: 0.9rem;
+  text-align: center;
+  max-width: 300px;
+}

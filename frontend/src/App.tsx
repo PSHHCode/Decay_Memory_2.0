@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Send, Bot, User, Terminal, Cpu, Settings, MessageSquare, Volume2, VolumeX, Mic, MicOff, Loader } from 'lucide-react';
+import { Send, Bot, User, Terminal, Cpu, Settings, MessageSquare, Volume2, VolumeX, Mic, MicOff, Loader, Phone, PhoneOff } from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
 import Dashboard from './Dashboard';
 import './App.css';
@@ -38,12 +38,207 @@ function App() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceChatMode, setVoiceChatMode] = useState(false);
+  const [voiceChatStatus, setVoiceChatStatus] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>('idle');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
   
   // Toggle voice on/off
   const toggleVoice = () => setVoiceEnabled(!voiceEnabled);
+  
+  // ===== VOICE CHAT MODE ("Her" style) =====
+  
+  const startVoiceChatMode = async () => {
+    try {
+      // Request microphone permission upfront
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      setVoiceChatMode(true);
+      setVoiceChatStatus('listening');
+      startVoiceChatListening(stream);
+    } catch (error) {
+      console.error('Microphone access denied:', error);
+      alert('Voice chat requires microphone permission. Please allow access and try again.');
+    }
+  };
+  
+  const stopVoiceChatMode = () => {
+    setVoiceChatMode(false);
+    setVoiceChatStatus('idle');
+    
+    // Stop any recording
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    
+    // Stop audio playback
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    
+    // Release microphone
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+  };
+  
+  const startVoiceChatListening = (stream: MediaStream) => {
+    if (!voiceChatMode && !streamRef.current) return;
+    
+    const mediaRecorder = new MediaRecorder(stream);
+    mediaRecorderRef.current = mediaRecorder;
+    audioChunksRef.current = [];
+    
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunksRef.current.push(event.data);
+      }
+    };
+    
+    mediaRecorder.onstop = async () => {
+      if (!voiceChatMode) return; // User exited voice mode
+      
+      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      
+      // Only process if there's actual audio (more than ~1KB)
+      if (audioBlob.size > 1000) {
+        await processVoiceChatInput(audioBlob);
+      } else {
+        // Restart listening if audio was too short
+        if (voiceChatMode && streamRef.current) {
+          startVoiceChatListening(streamRef.current);
+        }
+      }
+    };
+    
+    mediaRecorder.start();
+    setVoiceChatStatus('listening');
+  };
+  
+  const stopVoiceChatListening = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+  
+  const processVoiceChatInput = async (audioBlob: Blob) => {
+    setVoiceChatStatus('thinking');
+    
+    try {
+      // 1. Transcribe
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+      
+      const headers: HeadersInit = {};
+      if (API_KEY) headers['X-API-Key'] = API_KEY;
+      
+      const transcribeRes = await fetch(`${API_BASE}/voice/transcribe`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+      
+      if (!transcribeRes.ok) {
+        throw new Error('Transcription failed');
+      }
+      
+      const { text } = await transcribeRes.json();
+      
+      if (!text || !text.trim()) {
+        // No speech detected, restart listening
+        if (voiceChatMode && streamRef.current) {
+          startVoiceChatListening(streamRef.current);
+        }
+        return;
+      }
+      
+      // Add user message to chat
+      const userMsg: Message = { role: 'user', content: text };
+      setMessages(prev => [...prev, userMsg]);
+      
+      // 2. Get AI response
+      const chatRes = await authFetch(`${API_BASE}/chat`, {
+        method: 'POST',
+        body: JSON.stringify({ message: text, project: project }),
+      });
+      
+      if (!chatRes.ok) {
+        throw new Error('Chat failed');
+      }
+      
+      const chatData = await chatRes.json();
+      
+      // Add AI message to chat
+      const aiMsg: Message = { 
+        role: 'ai', 
+        content: chatData.response, 
+        mood: chatData.mood,
+        intimacy: chatData.intimacy 
+      };
+      setMessages(prev => [...prev, aiMsg]);
+      
+      // 3. Speak the response
+      setVoiceChatStatus('speaking');
+      await speakAndWait(chatData.response);
+      
+      // 4. Restart listening (continuous conversation)
+      if (voiceChatMode && streamRef.current) {
+        startVoiceChatListening(streamRef.current);
+      }
+      
+    } catch (error) {
+      console.error('Voice chat error:', error);
+      setVoiceChatStatus('idle');
+      // Restart listening on error
+      if (voiceChatMode && streamRef.current) {
+        setTimeout(() => {
+          if (voiceChatMode && streamRef.current) {
+            startVoiceChatListening(streamRef.current);
+          }
+        }, 1000);
+      }
+    }
+  };
+  
+  const speakAndWait = (text: string): Promise<void> => {
+    return new Promise(async (resolve) => {
+      try {
+        const response = await authFetch(`${API_BASE}/voice/speak`, {
+          method: 'POST',
+          body: JSON.stringify({ message: text }),
+        });
+        
+        if (response.ok) {
+          const audioBlob = await response.blob();
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          audioRef.current = audio;
+          
+          audio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            audioRef.current = null;
+            resolve();
+          };
+          
+          audio.onerror = () => {
+            URL.revokeObjectURL(audioUrl);
+            audioRef.current = null;
+            resolve();
+          };
+          
+          audio.play();
+        } else {
+          resolve();
+        }
+      } catch {
+        resolve();
+      }
+    });
+  };
   
   // Start recording voice input
   const startRecording = async () => {
@@ -330,11 +525,11 @@ function App() {
         </div>
         <div className="status-bar">
           <button 
-            className={`voice-toggle ${voiceEnabled ? 'enabled' : 'disabled'}`}
-            onClick={toggleVoice}
-            title={voiceEnabled ? 'Voice enabled' : 'Voice disabled'}
+            className="voice-chat-btn"
+            onClick={startVoiceChatMode}
+            title="Start Voice Chat"
           >
-            {voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+            <Phone size={14} /> Voice
           </button>
           <span className={`status-indicator ${status.includes('Online') ? 'online' : 'offline'}`}>
             {status}
@@ -345,6 +540,38 @@ function App() {
           </div>
         </div>
       </header>
+
+      {/* Voice Chat Mode Overlay */}
+      {voiceChatMode && (
+        <div className="voice-chat-overlay">
+          <div className="voice-chat-container">
+            <div className={`voice-orb ${voiceChatStatus}`}>
+              <div className="orb-inner"></div>
+            </div>
+            <div className="voice-status-text">
+              {voiceChatStatus === 'listening' && 'Listening...'}
+              {voiceChatStatus === 'thinking' && 'Thinking...'}
+              {voiceChatStatus === 'speaking' && 'Speaking...'}
+              {voiceChatStatus === 'idle' && 'Ready'}
+            </div>
+            <div className="voice-chat-controls">
+              {voiceChatStatus === 'listening' && (
+                <button className="voice-stop-btn" onClick={stopVoiceChatListening}>
+                  <MicOff size={20} /> Done Speaking
+                </button>
+              )}
+              <button className="voice-exit-btn" onClick={stopVoiceChatMode}>
+                <PhoneOff size={20} /> End Voice Chat
+              </button>
+            </div>
+            <p className="voice-hint">
+              {voiceChatStatus === 'listening' && 'Speak naturally, then click "Done Speaking" when finished'}
+              {voiceChatStatus === 'thinking' && 'Processing your message...'}
+              {voiceChatStatus === 'speaking' && 'AI is responding...'}
+            </p>
+          </div>
+        </div>
+      )}
 
       {view === 'chat' ? (
         <>
@@ -386,24 +613,15 @@ function App() {
 
           <footer className="input-area">
             <div className="input-wrapper">
-              <button 
-                className={`mic-btn ${isRecording ? 'recording' : ''}`}
-                onClick={isRecording ? stopRecording : startRecording}
-                disabled={isLoading || isTranscribing}
-                title={isRecording ? 'Stop recording' : 'Start voice input'}
-              >
-                {isTranscribing ? <Loader size={18} className="spinning" /> : 
-                 isRecording ? <MicOff size={18} /> : <Mic size={18} />}
-              </button>
               <input
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                placeholder={isRecording ? "Listening..." : isTranscribing ? "Transcribing..." : "Type or click 🎤 to speak..."}
-                disabled={isLoading || isRecording || isTranscribing}
+                placeholder="Type a message..."
+                disabled={isLoading}
               />
-              <button onClick={sendMessage} disabled={isLoading || isRecording || isTranscribing}>
+              <button onClick={sendMessage} disabled={isLoading}>
                 <Send size={18} />
               </button>
             </div>
