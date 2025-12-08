@@ -112,8 +112,8 @@ function App() {
       const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
       console.log('Audio blob size:', audioBlob.size);
       
-      // Only process if there's actual audio (more than ~1KB)
-      if (audioBlob.size > 1000) {
+      // Only process if there's substantial audio (more than ~5KB to filter noise)
+      if (audioBlob.size > 5000) {
         await processVoiceChatInput(audioBlob);
       } else {
         console.log('Audio too short, restarting listening...');
@@ -171,17 +171,24 @@ function App() {
       }
       
       const { text } = await transcribeRes.json();
+      const cleanText = text?.trim() || '';
       
-      if (!text || !text.trim()) {
-        // No speech detected, restart listening
+      // Filter out noise/garbage transcriptions
+      // Must be at least 3 real characters and not just punctuation
+      const realText = cleanText.replace(/[.,!?;:\-'"]/g, '').trim();
+      if (!realText || realText.length < 3) {
+        console.log('Transcription too short or just noise, ignoring:', cleanText);
+        // Restart listening
         if (voiceChatMode && streamRef.current) {
           startVoiceChatListening(streamRef.current);
         }
         return;
       }
       
+      console.log('Valid transcription:', cleanText);
+      
       // Add user message to chat
-      const userMsg: Message = { role: 'user', content: text };
+      const userMsg: Message = { role: 'user', content: cleanText };
       setMessages(prev => [...prev, userMsg]);
       
       // 2. Get AI response
