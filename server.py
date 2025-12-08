@@ -390,11 +390,13 @@ class ChatResponse(BaseModel):
     response: str
     mood: str
     intimacy: float
+    response_time_ms: Optional[int] = None
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
-    """Main chat endpoint - Uses Claude Haiku 3.5."""
+    """Main chat endpoint - Uses Groq for fast inference."""
     global conversation_history
+    start_time = time.time()
     
     if request.project != state.current_project:
         state.current_project = request.project
@@ -478,10 +480,14 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
             ai_text
         )
 
+    response_time_ms = int((time.time() - start_time) * 1000)
+    logger.info(f"💬 Chat response in {response_time_ms}ms")
+    
     return ChatResponse(
         response=ai_text, 
         mood=state.soul.state.mood, 
-        intimacy=state.soul.state.intimacy
+        intimacy=state.soul.state.intimacy,
+        response_time_ms=response_time_ms
     )
 
 
@@ -1137,6 +1143,14 @@ async def heartbeat_status():
     if heartbeat_engine is None:
         raise HTTPException(status_code=503, detail="Heartbeat not initialized")
     return heartbeat_engine.get_status()
+
+@app.get("/weather")
+async def get_weather():
+    """Get current weather from OpenWeatherMap."""
+    from heartbeat_service import get_weather_context, HeartbeatConfig
+    config = HeartbeatConfig.from_env()
+    weather = await get_weather_context(config)
+    return weather
 
 @app.get("/heartbeat/pending")
 async def heartbeat_pending():

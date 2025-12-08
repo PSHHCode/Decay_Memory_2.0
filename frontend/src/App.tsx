@@ -9,6 +9,7 @@ interface Message {
   content: string;
   mood?: string;
   intimacy?: number;
+  response_time_ms?: number;
 }
 
 // =============================================================================
@@ -208,7 +209,8 @@ function App() {
         role: 'ai', 
         content: chatData.response, 
         mood: chatData.mood,
-        intimacy: chatData.intimacy 
+        intimacy: chatData.intimacy,
+        response_time_ms: chatData.response_time_ms
       };
       setMessages(prev => [...prev, aiMsg]);
       
@@ -378,7 +380,8 @@ function App() {
         role: 'ai', 
         content: data.response, 
         mood: data.mood,
-        intimacy: data.intimacy 
+        intimacy: data.intimacy,
+        response_time_ms: data.response_time_ms
       };
       setMessages(prev => [...prev, aiMsg]);
       
@@ -499,6 +502,7 @@ function App() {
                   {msg.mood && typeof msg.intimacy === 'number' && (
                     <div className="meta-tag">
                       Mood: {msg.mood} • Intimacy: {(msg.intimacy * 100).toFixed(0)}%
+                      {msg.response_time_ms && ` • ${(msg.response_time_ms / 1000).toFixed(1)}s`}
                     </div>
                   )}
                 </div>
