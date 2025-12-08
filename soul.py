@@ -382,11 +382,7 @@ class EmotionalState:
         return (
             f"[INTERNAL STATE]\n"
             f"FAMILIARITY: {intimacy_desc}\n"
-            f"\nRESPONSE RULES:\n"
-            f"- Answer directly, then stop - no filler phrases\n"
-            f"- No 'feel free to ask', 'let me know', etc.\n"
-            f"- No follow-up questions unless genuinely needed\n"
-            f"- No pet names, no roleplay actions (*yawn* etc.)"
+            f"\nRULES: Answer directly then STOP. Never end with questions or offers to help more."
         )
     
     def get_emotional_context(self) -> Dict[str, Any]:
