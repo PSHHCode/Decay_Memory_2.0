@@ -380,9 +380,11 @@ class EmotionalState:
         arousal_desc = "Engaged" if self.state.arousal > 0.7 else ("Calm" if self.state.arousal < 0.3 else "Moderate")
         
         return (
-            f"[INTERNAL STATE]\n"
-            f"FAMILIARITY: {intimacy_desc}\n"
-            f"\nRULES: Answer directly then STOP. Never end with questions or offers to help more."
+            f"[YOUR CURRENT STATE]\n"
+            f"Mood: {self.state.mood}\n"
+            f"Energy: {energy_desc}\n"
+            f"Relationship with user: {intimacy_desc}\n"
+            f"\nLet this state naturally influence your tone and engagement level."
         )
     
     def get_emotional_context(self) -> Dict[str, Any]:
