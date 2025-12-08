@@ -110,7 +110,7 @@ if not API_KEY or not OPENAI_KEY:
 memory_service.openai_client = OpenAI(api_key=OPENAI_KEY)
 
 # Models
-CHAT_MODEL = "llama-3.1-70b-versatile"  # Groq for fast chat (~300 tok/s)
+CHAT_MODEL = "llama-3.3-70b-versatile"  # Groq for fast chat (~300 tok/s)
 LIBRARIAN_MODEL = "gemini-2.5-flash-lite"  # Gemini for background tasks (cheap)
 
 # Groq client for main chat (fast!)
