@@ -80,6 +80,45 @@ body, html, #root {
   padding-top: 4px;
 }
 
+/* Speak Button on AI Messages */
+.speak-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  color: var(--accent);
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-bubble:hover .speak-btn {
+  opacity: 1;
+}
+
+.speak-btn:hover {
+  background: rgba(88, 166, 255, 0.3);
+}
+
+.speak-btn.speaking {
+  opacity: 1;
+  background: rgba(126, 231, 135, 0.2);
+  border-color: rgba(126, 231, 135, 0.4);
+  color: #7ee787;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 .input-area {
   padding: 1.5rem;
   border-top: 1px solid #30363d;
