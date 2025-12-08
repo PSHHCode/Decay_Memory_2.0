@@ -244,6 +244,7 @@ async def lifespan(app: FastAPI):
         soul=state.soul,
         config=HeartbeatConfig.from_env()
     )
+    heartbeat_engine.running = True  # Mark as running (we manage the loop externally)
     
     # Initialize Curiosity Engine (Phase 3)
     logger.info("Starting Curiosity Engine V1.0...")

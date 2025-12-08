@@ -26,16 +26,48 @@ body, html, #root {
 }
 
 .header {
-  padding: 1rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid #30363d;
   display: flex;
   justify-content: space-between;
   align-items: center;
   background: var(--sidebar-bg);
+  gap: 1rem;
 }
 
 .logo-area { display: flex; align-items: center; gap: 10px; color: var(--accent); }
 .logo-area h1 { font-size: 1.2rem; margin: 0; }
+
+/* Header Center - View Switcher */
+.header-center {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.view-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #8b949e;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+}
+
+.view-btn:hover {
+  background: #21262d;
+  color: #c9d1d9;
+}
+
+.view-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1117;
+}
 
 .status-bar { 
   font-size: 0.8rem; 
